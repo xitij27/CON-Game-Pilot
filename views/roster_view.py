@@ -138,11 +138,16 @@ class _LockConfirmView(discord.ui.View):
         }
         for role in guild.roles:
             if role.name in config.ADMIN_ROLES:
-                overwrites[role] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
+                overwrites[role] = discord.PermissionOverwrite(
+                    read_messages=True, send_messages=True, use_application_commands=True
+                )
 
         leader = guild.get_member(panel.match["leader_id"])
         if leader:
-            overwrites[leader] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
+            # Leader needs use_application_commands to run /startgame after lock
+            overwrites[leader] = discord.PermissionOverwrite(
+                read_messages=True, send_messages=True, use_application_commands=True
+            )
 
         selected_members: list[discord.Member] = []
         for reg in panel.registrations:
@@ -168,6 +173,7 @@ class _LockConfirmView(discord.ui.View):
         )
 
         await channel.edit(category=target_category, overwrites=overwrites)
+
         await interaction.followup.send("Roster locked successfully!", ephemeral=True)
         self.stop()
 

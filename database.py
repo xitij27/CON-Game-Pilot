@@ -36,18 +36,20 @@ async def init_db() -> None:
         """)
         await db.commit()
 
-    # Drop stale speed column if present from an older schema version
     async with aiosqlite.connect(DB_PATH) as db:
         async with db.execute("PRAGMA table_info(matches)") as cur:
             cols = {row[1] for row in await cur.fetchall()}
         if "speed" in cols:
             await db.execute("ALTER TABLE matches DROP COLUMN speed")
             await db.commit()
+        if "game_code" not in cols:
+            await db.execute("ALTER TABLE matches ADD COLUMN game_code TEXT")
+            await db.commit()
 
 
 # ── matches ──────────────────────────────────────────────────────────────────
 
-async def create_match(
+async def create_game(
     channel_id: int, guild_id: int, leader_id: int,
     game_type: str, region: str,
 ) -> int:
@@ -92,6 +94,15 @@ async def get_open_matches() -> list[dict]:
 async def update_match_status(match_id: int, status: str) -> None:
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("UPDATE matches SET status = ? WHERE id = ?", (status, match_id))
+        await db.commit()
+
+
+async def set_game_code(match_id: int, code: str) -> None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE matches SET game_code = ?, status = 'started' WHERE id = ?",
+            (code, match_id),
+        )
         await db.commit()
 
 

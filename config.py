@@ -6,7 +6,7 @@ load_dotenv()
 DISCORD_TOKEN: str = os.getenv("DISCORD_BOT_TOKEN", "")
 GUILD_ID: int = int(os.getenv("SERVER_ID", "0"))
 
-# Roles permitted to run /creatematch (Corporal and above)
+# Roles permitted to run /creategame (Corporal and above)
 ALLOWED_RANKS: list[str] = [
     "Corporal",
     "Sergeant",
