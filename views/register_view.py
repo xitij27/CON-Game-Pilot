@@ -162,15 +162,15 @@ class _RoleSelectionView(discord.ui.View):
             }
             await interaction.response.send_modal(_CountryModal(self.match))
         else:
-            taken = await db.get_taken_countries(match_id)
+            taken_primary = await db.get_taken_primary_countries(match_id)
             all_countries = get_countries(self.match["game_type"], self.match["region"])
-            available = [c for c in all_countries if c["name"].lower() not in taken]
-            if not available:
+            primary_available = [c for c in all_countries if c["name"].lower() not in taken_primary]
+            if not primary_available:
                 await interaction.response.send_message(
                     "No countries are available in this region right now.", ephemeral=True
                 )
                 return
-            view = _CountrySelectView(self.match, available, self.squad_role, self.military_role)
+            view = _CountrySelectView(self.match, primary_available, all_countries, self.squad_role, self.military_role)
             embed = discord.Embed(
                 title="Registration — Step 2 of 2",
                 description=(
@@ -186,7 +186,7 @@ class _RoleSelectionView(discord.ui.View):
 # ── Step 2a: country dropdowns (non-Spy) ─────────────────────────────────────
 
 class _CountrySelectView(discord.ui.View):
-    def __init__(self, match: dict, available: list[dict], squad_role: str, military_role: str):
+    def __init__(self, match: dict, primary_available: list[dict], all_countries: list[dict], squad_role: str, military_role: str):
         super().__init__(timeout=120)
         self.match = match
         self.squad_role = squad_role
@@ -194,27 +194,36 @@ class _CountrySelectView(discord.ui.View):
         self.primary_country: Optional[str] = None
         self.secondary_country: Optional[str] = None
 
-        country_options = [
+        primary_options = [
             discord.SelectOption(
                 label=c["name"],
                 value=c["name"],
                 description=f"{c['doctrine']} · {c['cities']} cities",
             )
-            for c in available[:25]
+            for c in primary_available[:25]
+        ]
+        # Secondary can be any country in the region — overlaps are allowed
+        secondary_options = [
+            discord.SelectOption(
+                label=c["name"],
+                value=c["name"],
+                description=f"{c['doctrine']} · {c['cities']} cities",
+            )
+            for c in all_countries[:24]
         ]
 
         primary_sel = discord.ui.Select(
             placeholder="Primary Country...",
-            options=country_options,
+            options=primary_options,
             custom_id="primary_country_select",
         )
         primary_sel.callback = self._on_primary
         self.add_item(primary_sel)
 
-        # Secondary: None option + up to 24 countries (Discord limit is 25 total)
+        # Secondary: None option + all region countries (Discord limit is 25 total)
         secondary_sel = discord.ui.Select(
             placeholder="Secondary Country (optional)...",
-            options=[discord.SelectOption(label="— None —", value="__none__")] + country_options[:24],
+            options=[discord.SelectOption(label="— None —", value="__none__")] + secondary_options,
             custom_id="secondary_country_select",
         )
         secondary_sel.callback = self._on_secondary
@@ -258,16 +267,11 @@ class _CountrySelectView(discord.ui.View):
             )
             return
 
-        # Race-condition re-checks
-        taken = await db.get_taken_countries(match_id)
-        if primary_c["name"].lower() in taken:
+        # Race-condition re-check: primary countries must be unique
+        taken_primary = await db.get_taken_primary_countries(match_id)
+        if primary_c["name"].lower() in taken_primary:
             await interaction.response.send_message(
                 f"**{primary_c['name']}** was just claimed — please restart registration.", ephemeral=True
-            )
-            return
-        if secondary_c and secondary_c["name"].lower() in taken:
-            await interaction.response.send_message(
-                f"**{secondary_c['name']}** was just claimed — please restart registration.", ephemeral=True
             )
             return
 
@@ -381,16 +385,11 @@ class _CountryModal(discord.ui.Modal):
                 )
                 return
 
-        # Check availability
-        taken = await db.get_taken_countries(match_id)
-        if primary_c["name"].lower() in taken:
+        # Primary countries must be unique; secondary countries may overlap
+        taken_primary = await db.get_taken_primary_countries(match_id)
+        if primary_c["name"].lower() in taken_primary:
             await interaction.response.send_message(
-                f"**{primary_c['name']}** is already claimed by another player.", ephemeral=True
-            )
-            return
-        if secondary_c and secondary_c["name"].lower() in taken:
-            await interaction.response.send_message(
-                f"**{secondary_c['name']}** is already claimed by another player.", ephemeral=True
+                f"**{primary_c['name']}** is already claimed as a primary country.", ephemeral=True
             )
             return
 

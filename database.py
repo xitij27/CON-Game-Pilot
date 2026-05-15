@@ -183,14 +183,9 @@ async def withdraw_registration(reg_id: int) -> None:
 
 # ── convenience queries ───────────────────────────────────────────────────────
 
-async def get_taken_countries(match_id: int) -> list[str]:
+async def get_taken_primary_countries(match_id: int) -> list[str]:
     regs = await get_registrations(match_id)
-    taken = []
-    for r in regs:
-        taken.append(r["primary_country"].lower())
-        if r["secondary_country"]:
-            taken.append(r["secondary_country"].lower())
-    return taken
+    return [r["primary_country"].lower() for r in regs]
 
 
 async def get_taken_military_roles(match_id: int) -> list[str]:
