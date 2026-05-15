@@ -54,8 +54,18 @@ class _RegisterButton(discord.ui.Button):
             )
             return
 
+        sq_counts = await db.get_squad_role_counts(match["id"])
+        taken_mil = await db.get_taken_military_roles(match["id"])
+
+        available_mil = [r for r in config.MILITARY_ROLES if r not in taken_mil]
+        if not available_mil:
+            await interaction.response.send_message(
+                "All military roles are filled — no spots available.", ephemeral=True
+            )
+            return
+
         is_leader = interaction.user.id == match["leader_id"]
-        view = _RoleSelectionView(match, is_leader=is_leader)
+        view = _RoleSelectionView(match, sq_counts, taken_mil, is_leader=is_leader)
         if is_leader:
             desc = (
                 f"**{match['game_type']} · {match['region']}**\n\n"
@@ -79,28 +89,36 @@ class _RegisterButton(discord.ui.Button):
 # ── Step 1: role selects ──────────────────────────────────────────────────────
 
 class _RoleSelectionView(discord.ui.View):
-    def __init__(self, match: dict, is_leader: bool = False):
+    def __init__(self, match: dict, sq_counts: dict, taken_mil: list, is_leader: bool = False):
         super().__init__(timeout=120)
         self.match = match
         self.squad_role: Optional[str] = "Leader" if is_leader else None
         self.military_role: Optional[str] = None
 
         if not is_leader:
+            available_squad = [
+                r for r in config.SQUAD_ROLES
+                if r != "Leader"
+                and (
+                    config.SQUAD_ROLE_LIMITS.get(r) is None
+                    or sq_counts.get(r, 0) < config.SQUAD_ROLE_LIMITS[r]
+                )
+            ]
             squad_select = discord.ui.Select(
                 placeholder="Squad Role...",
                 options=[
                     discord.SelectOption(label=r, value=r, description=_squad_desc(r))
-                    for r in config.SQUAD_ROLES
-                    if r != "Leader"
+                    for r in available_squad
                 ],
                 custom_id="squad_role_select",
             )
             squad_select.callback = self._on_squad_role
             self.add_item(squad_select)
 
+        available_mil = [r for r in config.MILITARY_ROLES if r not in taken_mil]
         mil_select = discord.ui.Select(
             placeholder="Military Role...",
-            options=[discord.SelectOption(label=r, value=r) for r in config.MILITARY_ROLES],
+            options=[discord.SelectOption(label=r, value=r) for r in available_mil],
             custom_id="military_role_select",
         )
         mil_select.callback = self._on_military_role
