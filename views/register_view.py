@@ -17,6 +17,43 @@ DOCTRINE_COLORS = {
     "European": discord.Color.gold(),
 }
 
+_DOCTRINE_EMOJI = {"Western": "🟦", "Eastern": "🟥", "European": "🟨"}
+
+
+async def _update_roster_embed(match: dict, channel: discord.TextChannel) -> None:
+    """Edit the pinned roster message to show only unclaimed primary countries."""
+    roster_msg_id = match.get("roster_message_id")
+    if not roster_msg_id:
+        return
+    try:
+        msg = await channel.fetch_message(roster_msg_id)
+    except (discord.NotFound, discord.Forbidden):
+        return
+    if not msg.embeds:
+        return
+
+    taken_primary = await db.get_taken_primary_countries(match["id"])
+    all_countries = get_countries(match["game_type"], match["region"])
+    available = [c for c in all_countries if c["name"].lower() not in taken_primary]
+
+    if available:
+        lines = [
+            f"{_DOCTRINE_EMOJI.get(c['doctrine'], '⬜')} **{c['name']}**  ·  "
+            f"{c['doctrine']}  ·  {c['cities']} cities"
+            for c in available
+        ]
+        new_value = "\n".join(lines)
+    else:
+        new_value = "*(all countries claimed)*"
+
+    embed = msg.embeds[0]
+    for i, field in enumerate(embed.fields):
+        if field.name == "Available Countries":
+            embed.set_field_at(i, name="Available Countries", value=new_value, inline=False)
+            break
+
+    await msg.edit(embed=embed)
+
 
 # ── Persistent outer view (lives on the pinned roster message) ────────────────
 
@@ -327,6 +364,7 @@ class _CountrySelectView(discord.ui.View):
         )
         msg = await interaction.followup.send(embed=card_embed, view=card_view)
         await db.update_registration_message(reg_id, msg.id)
+        await _update_roster_embed(self.match, interaction.channel)
 
 
 # ── Step 2b: country name modal (Spy only) ────────────────────────────────────
@@ -446,6 +484,10 @@ class _CountryModal(discord.ui.Modal):
         msg = await interaction.original_response()
         await db.update_registration_message(reg_id, msg.id)
 
+        match = await db.get_match_by_channel(interaction.channel_id)
+        if match:
+            await _update_roster_embed(match, interaction.channel)
+
 
 # ── Registration card + withdraw button ───────────────────────────────────────
 
@@ -532,6 +574,9 @@ class _WithdrawButton(discord.ui.Button):
         )
         await interaction.message.edit(embed=struck, view=None)
         await interaction.response.send_message("You've withdrawn from this match.", ephemeral=True)
+
+        if match:
+            await _update_roster_embed(match, interaction.channel)
 
 
 async def _fetch_reg(reg_id: int) -> Optional[dict]:

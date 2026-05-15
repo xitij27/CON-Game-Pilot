@@ -8,7 +8,7 @@ import config
 import database as db
 from data.game_data import get_countries
 from views.setup_views import SetupWizard
-from views.register_view import RegisterMatchView
+from views.register_view import RegisterMatchView, _update_roster_embed
 from views.roster_view import RosterPanel
 
 DOCTRINE_EMOJI = {"Western": "🟦", "Eastern": "🟥", "European": "🟨"}
@@ -116,6 +116,7 @@ class MatchCog(commands.Cog):
         msg = await channel.send(embed=roster_embed, view=view)
         await msg.pin()
         self.bot.add_view(view)
+        await db.set_roster_message_id(match_id, msg.id)
 
         # Optional announcement
         ann_ch = discord.utils.get(guild.text_channels, name=config.NEW_MAP_CHANNEL)
@@ -298,16 +299,17 @@ class MatchCog(commands.Cog):
 
         await db.withdraw_registration(reg["id"])
         await ctx.followup.send("You've withdrawn from this match.", ephemeral=True)
+        await _update_roster_embed(match, ctx.channel)
 
     # ── /help ─────────────────────────────────────────────────────────────────
 
     @discord.slash_command(
         name="help",
-        description="Show all available StrikeBot commands",
+        description="Show all available CommandPost commands",
     )
     async def help(self, ctx: discord.ApplicationContext) -> None:
         embed = discord.Embed(
-            title="📖  StrikeBot Commands",
+            title="📖  CommandPost Commands",
             color=discord.Color.blurple(),
         )
 
@@ -339,7 +341,7 @@ class MatchCog(commands.Cog):
             ),
             inline=False,
         )
-        embed.set_footer(text="StrikeBot • Map Match Manager")
+        embed.set_footer(text="CommandPost • Map Match Manager")
         await ctx.respond(embed=embed, ephemeral=True)
 
 

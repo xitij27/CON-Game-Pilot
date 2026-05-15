@@ -1,7 +1,7 @@
 import aiosqlite
 from typing import Optional
 
-DB_PATH = "strikebot.db"
+DB_PATH = "commandpost.db"
 
 
 async def init_db() -> None:
@@ -44,6 +44,9 @@ async def init_db() -> None:
             await db.commit()
         if "game_code" not in cols:
             await db.execute("ALTER TABLE matches ADD COLUMN game_code TEXT")
+            await db.commit()
+        if "roster_message_id" not in cols:
+            await db.execute("ALTER TABLE matches ADD COLUMN roster_message_id INTEGER")
             await db.commit()
 
 
@@ -94,6 +97,15 @@ async def get_open_matches() -> list[dict]:
 async def update_match_status(match_id: int, status: str) -> None:
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("UPDATE matches SET status = ? WHERE id = ?", (status, match_id))
+        await db.commit()
+
+
+async def set_roster_message_id(match_id: int, message_id: int) -> None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE matches SET roster_message_id = ? WHERE id = ?",
+            (message_id, match_id),
+        )
         await db.commit()
 
 
