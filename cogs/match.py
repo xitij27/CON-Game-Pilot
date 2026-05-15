@@ -31,8 +31,9 @@ class MatchCog(commands.Cog):
         description="Start a new map match (Corporal+ only)",
     )
     async def creatematch(self, ctx: discord.ApplicationContext) -> None:
+        await ctx.defer(ephemeral=True)
         if not self._has_rank(ctx.author):
-            await ctx.respond(
+            await ctx.followup.send(
                 f"You need at least **{config.ALLOWED_RANKS[0]}** rank to create a match.",
                 ephemeral=True,
             )
@@ -40,7 +41,7 @@ class MatchCog(commands.Cog):
 
         existing = await db.get_open_match_by_leader(ctx.author.id, ctx.guild_id)
         if existing:
-            await ctx.respond(
+            await ctx.followup.send(
                 "You already have an open match. Use `/cancelmatch` in that channel first.",
                 ephemeral=True,
             )
@@ -52,19 +53,17 @@ class MatchCog(commands.Cog):
             description="Choose a **Game Type** to begin.",
             color=discord.Color.blue(),
         )
-        embed.set_footer(text="Game Type → Speed → Region → Confirm")
-        await ctx.respond(embed=embed, view=wizard, ephemeral=True)
+        embed.set_footer(text="Game Type → Region → Confirm")
+        await ctx.followup.send(embed=embed, view=wizard, ephemeral=True)
 
     async def _wizard_confirmed(
         self, interaction: discord.Interaction, wizard: SetupWizard
     ) -> None:
         guild = interaction.guild
 
-        scale = config.GAME_TYPE_SCALE.get(wizard.game_type, "1X")
-        category_name = config.SCALE_CATEGORIES.get(scale, "1X GAMES")
-        category = discord.utils.get(guild.categories, name=category_name)
+        category = discord.utils.get(guild.categories, name=config.PREGAME_CATEGORY)
         if not category:
-            category = await guild.create_category(category_name)
+            category = await guild.create_category(config.PREGAME_CATEGORY)
 
         safe_name = (
             f"{wizard.game_type}-{wizard.region}"
@@ -72,6 +71,30 @@ class MatchCog(commands.Cog):
             .replace(" ", "-")
             .replace(".", "")
         )
+        # Build permission overwrites: everyone can read/write but only the
+        # leader (and admin roles) can use slash commands in this channel.
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(
+                read_messages=True,
+                send_messages=True,
+                use_application_commands=False,
+            ),
+            guild.me: discord.PermissionOverwrite(
+                read_messages=True,
+                send_messages=True,
+                manage_messages=True,
+                use_application_commands=True,
+            ),
+            interaction.user: discord.PermissionOverwrite(
+                use_application_commands=True,
+            ),
+        }
+        for role in guild.roles:
+            if role.name in config.ADMIN_ROLES:
+                overwrites[role] = discord.PermissionOverwrite(
+                    use_application_commands=True,
+                )
+
         channel = await guild.create_text_channel(
             name=safe_name,
             category=category,
@@ -79,6 +102,7 @@ class MatchCog(commands.Cog):
                 f"{wizard.game_type}  |  {wizard.region}  "
                 f"|  Led by {interaction.user.display_name}"
             ),
+            overwrites=overwrites,
         )
 
         match_id = await db.create_match(
@@ -164,20 +188,21 @@ class MatchCog(commands.Cog):
         description="Open the roster management panel (Map Leader / Admin only)",
     )
     async def roster(self, ctx: discord.ApplicationContext) -> None:
+        await ctx.defer(ephemeral=True)
         match = await db.get_match_by_channel(ctx.channel_id)
         if not match:
-            await ctx.respond("This isn't a match channel.", ephemeral=True)
+            await ctx.followup.send("This isn't a match channel.", ephemeral=True)
             return
 
         if match["leader_id"] != ctx.author.id and not self._is_admin(ctx.author):
-            await ctx.respond("Only the Map Leader or an Admin can open the roster panel.", ephemeral=True)
+            await ctx.followup.send("Only the Map Leader or an Admin can open the roster panel.", ephemeral=True)
             return
 
         regs = await db.get_registrations(match["id"])
         members = {r["user_id"]: ctx.guild.get_member(r["user_id"]) for r in regs}
 
         panel = RosterPanel(match, regs, members)
-        await ctx.respond(embed=panel.build_embed(), view=panel, ephemeral=True)
+        await ctx.followup.send(embed=panel.build_embed(), view=panel, ephemeral=True)
 
     # ── /cancelmatch ──────────────────────────────────────────────────────────
 
@@ -186,16 +211,17 @@ class MatchCog(commands.Cog):
         description="Cancel this match and delete the channel",
     )
     async def cancelmatch(self, ctx: discord.ApplicationContext) -> None:
+        await ctx.defer(ephemeral=True)
         match = await db.get_match_by_channel(ctx.channel_id)
         if not match:
-            await ctx.respond("This isn't a match channel.", ephemeral=True)
+            await ctx.followup.send("This isn't a match channel.", ephemeral=True)
             return
 
         if match["leader_id"] != ctx.author.id and not self._is_admin(ctx.author):
-            await ctx.respond("Only the Map Leader or an Admin can cancel this match.", ephemeral=True)
+            await ctx.followup.send("Only the Map Leader or an Admin can cancel this match.", ephemeral=True)
             return
 
-        await ctx.respond(
+        await ctx.followup.send(
             "Cancel this match and **delete the channel**?",
             view=_CancelConfirmView(match),
             ephemeral=True,
@@ -208,21 +234,28 @@ class MatchCog(commands.Cog):
         description="Withdraw your registration from this match",
     )
     async def withdraw(self, ctx: discord.ApplicationContext) -> None:
+        await ctx.defer(ephemeral=True)
         match = await db.get_match_by_channel(ctx.channel_id)
         if not match:
-            await ctx.respond("This isn't a match channel.", ephemeral=True)
+            await ctx.followup.send("This isn't a match channel.", ephemeral=True)
+            return
+        if match["leader_id"] == ctx.author.id:
+            await ctx.followup.send(
+                "As the Match Leader you cannot withdraw — use `/cancelmatch` to cancel the match.",
+                ephemeral=True,
+            )
             return
         if match["status"] == "locked":
-            await ctx.respond("The roster is locked — contact the Map Leader.", ephemeral=True)
+            await ctx.followup.send("The roster is locked — contact the Map Leader.", ephemeral=True)
             return
 
         reg = await db.get_registration(match["id"], ctx.author.id)
         if not reg:
-            await ctx.respond("You aren't registered for this match.", ephemeral=True)
+            await ctx.followup.send("You aren't registered for this match.", ephemeral=True)
             return
 
         await db.withdraw_registration(reg["id"])
-        await ctx.respond("You've withdrawn from this match.", ephemeral=True)
+        await ctx.followup.send("You've withdrawn from this match.", ephemeral=True)
 
 
 # ── cancel-match confirm view ─────────────────────────────────────────────────
