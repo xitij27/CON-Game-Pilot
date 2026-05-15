@@ -134,6 +134,7 @@ class _LockConfirmView(discord.ui.View):
         # Build permission overwrites
         overwrites: dict = {
             guild.default_role: discord.PermissionOverwrite(read_messages=False),
+            guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True, manage_messages=True),
         }
         for role in guild.roles:
             if role.name in config.ADMIN_ROLES:
@@ -151,7 +152,11 @@ class _LockConfirmView(discord.ui.View):
                     overwrites[m] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
                     selected_members.append(m)
 
-        await channel.edit(overwrites=overwrites)
+        scale = config.GAME_TYPE_SCALE.get(panel.match["game_type"], "1X")
+        category_name = config.SCALE_CATEGORIES.get(scale, "1X GAMES")
+        target_category = discord.utils.get(guild.categories, name=category_name)
+        if not target_category:
+            target_category = await guild.create_category(category_name)
 
         mentions = " ".join(m.mention for m in selected_members)
         await channel.send(
@@ -161,6 +166,8 @@ class _LockConfirmView(discord.ui.View):
                 color=discord.Color.red(),
             )
         )
+
+        await channel.edit(category=target_category, overwrites=overwrites)
         await interaction.followup.send("Roster locked successfully!", ephemeral=True)
         self.stop()
 

@@ -25,6 +25,8 @@ ADMIN_ROLES: list[str] = [
     "Owner",
 ]
 
+PREGAME_CATEGORY: str = "PREGAME"
+
 # Discord category names for each scale tier
 SCALE_CATEGORIES: dict[str, str] = {
     "1X": "1X GAMES",
