@@ -24,13 +24,13 @@ class MatchCog(commands.Cog):
     def _is_admin(self, member: discord.Member) -> bool:
         return any(r.name in config.ADMIN_ROLES for r in member.roles)
 
-    # ── /creatematch ──────────────────────────────────────────────────────────
+    # ── /creategame ───────────────────────────────────────────────────────────
 
     @discord.slash_command(
-        name="creatematch",
+        name="creategame",
         description="Start a new map match (Corporal+ only)",
     )
-    async def creatematch(self, ctx: discord.ApplicationContext) -> None:
+    async def creategame(self, ctx: discord.ApplicationContext) -> None:
         await ctx.defer(ephemeral=True)
         if not self._has_rank(ctx.author):
             await ctx.followup.send(
@@ -105,7 +105,7 @@ class MatchCog(commands.Cog):
             overwrites=overwrites,
         )
 
-        match_id = await db.create_match(
+        match_id = await db.create_game(
             channel.id, guild.id, interaction.user.id,
             wizard.game_type, wizard.region,
         )
@@ -204,6 +204,48 @@ class MatchCog(commands.Cog):
         panel = RosterPanel(match, regs, members)
         await ctx.followup.send(embed=panel.build_embed(), view=panel, ephemeral=True)
 
+    # ── /startgame ────────────────────────────────────────────────────────────
+
+    @discord.slash_command(
+        name="startgame",
+        description="Enter the game code once a lobby is found (Map Leader / Admin only)",
+    )
+    async def startgame(
+        self,
+        ctx: discord.ApplicationContext,
+        code: discord.Option(str, "Game lobby code", required=True),
+    ) -> None:
+        await ctx.defer(ephemeral=True)
+        match = await db.get_match_by_channel(ctx.channel_id)
+        if not match:
+            await ctx.followup.send("This isn't a match channel.", ephemeral=True)
+            return
+        if match["leader_id"] != ctx.author.id and not self._is_admin(ctx.author):
+            await ctx.followup.send("Only the Map Leader or an Admin can start the game.", ephemeral=True)
+            return
+        if match["status"] != "locked":
+            await ctx.followup.send("The roster must be locked before starting the game.", ephemeral=True)
+            return
+
+        guild = ctx.guild
+        channel = ctx.channel
+        leader = guild.get_member(match["leader_id"])
+        leader_name = (leader.display_name if leader else str(match["leader_id"]))
+        safe_leader = leader_name.lower().replace(" ", "-").replace(".", "")
+        safe_code = code.lower().replace(" ", "-")
+        new_name = f"{safe_code}-{safe_leader}"
+
+        await db.set_game_code(match["id"], code)
+        await channel.edit(name=new_name)
+        await channel.send(
+            embed=discord.Embed(
+                title="🎮  Game Found!",
+                description=f"**Game Code:** `{code}`\n\nGood luck everyone!",
+                color=discord.Color.green(),
+            )
+        )
+        await ctx.followup.send("Game started!", ephemeral=True)
+
     # ── /cancelmatch ──────────────────────────────────────────────────────────
 
     @discord.slash_command(
@@ -256,6 +298,49 @@ class MatchCog(commands.Cog):
 
         await db.withdraw_registration(reg["id"])
         await ctx.followup.send("You've withdrawn from this match.", ephemeral=True)
+
+    # ── /help ─────────────────────────────────────────────────────────────────
+
+    @discord.slash_command(
+        name="help",
+        description="Show all available StrikeBot commands",
+    )
+    async def help(self, ctx: discord.ApplicationContext) -> None:
+        embed = discord.Embed(
+            title="📖  StrikeBot Commands",
+            color=discord.Color.blurple(),
+        )
+
+        embed.add_field(
+            name="🌐  Anyone",
+            value=(
+                "`/creategame` — Launch the match setup wizard and open registration\n"
+                "`/withdraw` — Withdraw your registration from the current match\n"
+                "📋 **Register** — Click the Register button in the match channel to join"
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="🗺️  Map Leader & Admins",
+            value=(
+                "`/roster` — Open the roster panel to select players and lock the roster\n"
+                "`/startgame <code>` — Enter the game lobby code once a game is found;\n"
+                "   renames the channel to `code-leadername`\n"
+                "`/cancelmatch` — Cancel the match and delete the channel"
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="ℹ️  Notes",
+            value=(
+                f"• `/creategame` requires **{config.ALLOWED_RANKS[0]}** rank or above\n"
+                "• Leader and Admin roles always keep channel access after roster lock\n"
+                "• Spy squad role allows picking any country across the full game map"
+            ),
+            inline=False,
+        )
+        embed.set_footer(text="StrikeBot • Map Match Manager")
+        await ctx.respond(embed=embed, ephemeral=True)
 
 
 # ── cancel-match confirm view ─────────────────────────────────────────────────
