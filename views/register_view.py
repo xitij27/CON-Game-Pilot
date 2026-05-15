@@ -54,14 +54,23 @@ class _RegisterButton(discord.ui.Button):
             )
             return
 
-        view = _RoleSelectionView(match)
-        embed = discord.Embed(
-            title="Registration — Step 1 of 2",
-            description=(
+        is_leader = interaction.user.id == match["leader_id"]
+        view = _RoleSelectionView(match, is_leader=is_leader)
+        if is_leader:
+            desc = (
+                f"**{match['game_type']} · {match['region']}**\n\n"
+                "You are the **Match Leader** — Squad Role is set to **Leader** automatically.\n"
+                "Pick your **Military Role**, then click **Continue**."
+            )
+        else:
+            desc = (
                 f"**{match['game_type']} · {match['region']}**\n\n"
                 "Pick your **Military Role** and **Squad Role**, then click **Continue**.\n"
                 "-# Spy role unlocks all countries across the full game type map."
-            ),
+            )
+        embed = discord.Embed(
+            title="Registration — Step 1 of 2",
+            description=desc,
             color=discord.Color.blue(),
         )
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
@@ -70,22 +79,24 @@ class _RegisterButton(discord.ui.Button):
 # ── Step 1: role selects ──────────────────────────────────────────────────────
 
 class _RoleSelectionView(discord.ui.View):
-    def __init__(self, match: dict):
+    def __init__(self, match: dict, is_leader: bool = False):
         super().__init__(timeout=120)
         self.match = match
-        self.squad_role: Optional[str] = None
+        self.squad_role: Optional[str] = "Leader" if is_leader else None
         self.military_role: Optional[str] = None
 
-        squad_select = discord.ui.Select(
-            placeholder="Squad Role...",
-            options=[
-                discord.SelectOption(label=r, value=r, description=_squad_desc(r))
-                for r in config.SQUAD_ROLES
-            ],
-            custom_id="squad_role_select",
-        )
-        squad_select.callback = self._on_squad_role
-        self.add_item(squad_select)
+        if not is_leader:
+            squad_select = discord.ui.Select(
+                placeholder="Squad Role...",
+                options=[
+                    discord.SelectOption(label=r, value=r, description=_squad_desc(r))
+                    for r in config.SQUAD_ROLES
+                    if r != "Leader"
+                ],
+                custom_id="squad_role_select",
+            )
+            squad_select.callback = self._on_squad_role
+            self.add_item(squad_select)
 
         mil_select = discord.ui.Select(
             placeholder="Military Role...",
@@ -140,18 +151,163 @@ class _RoleSelectionView(discord.ui.View):
             )
             return
 
-        # Stash partial state and open the country modal
-        _pending[interaction.user.id] = {
-            "match_id":     match_id,
-            "game_type":    self.match["game_type"],
-            "region":       self.match["region"],
-            "squad_role":   self.squad_role,
-            "military_role": self.military_role,
-        }
-        await interaction.response.send_modal(_CountryModal(self.match))
+        if self.squad_role == "Spy":
+            # Spy searches across all regions — too many options for a dropdown
+            _pending[interaction.user.id] = {
+                "match_id":      match_id,
+                "game_type":     self.match["game_type"],
+                "region":        self.match["region"],
+                "squad_role":    self.squad_role,
+                "military_role": self.military_role,
+            }
+            await interaction.response.send_modal(_CountryModal(self.match))
+        else:
+            taken = await db.get_taken_countries(match_id)
+            all_countries = get_countries(self.match["game_type"], self.match["region"])
+            available = [c for c in all_countries if c["name"].lower() not in taken]
+            if not available:
+                await interaction.response.send_message(
+                    "No countries are available in this region right now.", ephemeral=True
+                )
+                return
+            view = _CountrySelectView(self.match, available, self.squad_role, self.military_role)
+            embed = discord.Embed(
+                title="Registration — Step 2 of 2",
+                description=(
+                    f"**{self.match['game_type']} · {self.match['region']}**\n\n"
+                    "Choose your **Primary Country** and optionally a **Secondary Country**,\n"
+                    "then click **Register**."
+                ),
+                color=discord.Color.blue(),
+            )
+            await interaction.response.edit_message(embed=embed, view=view)
 
 
-# ── Step 2: country name modal ────────────────────────────────────────────────
+# ── Step 2a: country dropdowns (non-Spy) ─────────────────────────────────────
+
+class _CountrySelectView(discord.ui.View):
+    def __init__(self, match: dict, available: list[dict], squad_role: str, military_role: str):
+        super().__init__(timeout=120)
+        self.match = match
+        self.squad_role = squad_role
+        self.military_role = military_role
+        self.primary_country: Optional[str] = None
+        self.secondary_country: Optional[str] = None
+
+        country_options = [
+            discord.SelectOption(
+                label=c["name"],
+                value=c["name"],
+                description=f"{c['doctrine']} · {c['cities']} cities",
+            )
+            for c in available[:25]
+        ]
+
+        primary_sel = discord.ui.Select(
+            placeholder="Primary Country...",
+            options=country_options,
+            custom_id="primary_country_select",
+        )
+        primary_sel.callback = self._on_primary
+        self.add_item(primary_sel)
+
+        # Secondary: None option + up to 24 countries (Discord limit is 25 total)
+        secondary_sel = discord.ui.Select(
+            placeholder="Secondary Country (optional)...",
+            options=[discord.SelectOption(label="— None —", value="__none__")] + country_options[:24],
+            custom_id="secondary_country_select",
+        )
+        secondary_sel.callback = self._on_secondary
+        self.add_item(secondary_sel)
+
+        submit = discord.ui.Button(
+            label="Register",
+            style=discord.ButtonStyle.success,
+            emoji="✅",
+            custom_id="country_submit",
+        )
+        submit.callback = self._on_submit
+        self.add_item(submit)
+
+    async def _on_primary(self, interaction: discord.Interaction) -> None:
+        self.primary_country = interaction.data["values"][0]
+        await interaction.response.defer()
+
+    async def _on_secondary(self, interaction: discord.Interaction) -> None:
+        val = interaction.data["values"][0]
+        self.secondary_country = None if val == "__none__" else val
+        await interaction.response.defer()
+
+    async def _on_submit(self, interaction: discord.Interaction) -> None:
+        if not self.primary_country:
+            await interaction.response.send_message(
+                "Please select a Primary Country first.", ephemeral=True
+            )
+            return
+
+        game_type = self.match["game_type"]
+        region    = self.match["region"]
+        match_id  = self.match["id"]
+
+        primary_c   = find_country_in_region(game_type, region, self.primary_country)
+        secondary_c = find_country_in_region(game_type, region, self.secondary_country) if self.secondary_country else None
+
+        if secondary_c and secondary_c["name"].lower() == primary_c["name"].lower():
+            await interaction.response.send_message(
+                "Primary and Secondary country can't be the same.", ephemeral=True
+            )
+            return
+
+        # Race-condition re-checks
+        taken = await db.get_taken_countries(match_id)
+        if primary_c["name"].lower() in taken:
+            await interaction.response.send_message(
+                f"**{primary_c['name']}** was just claimed — please restart registration.", ephemeral=True
+            )
+            return
+        if secondary_c and secondary_c["name"].lower() in taken:
+            await interaction.response.send_message(
+                f"**{secondary_c['name']}** was just claimed — please restart registration.", ephemeral=True
+            )
+            return
+
+        sq_counts = await db.get_squad_role_counts(match_id)
+        limit = config.SQUAD_ROLE_LIMITS.get(self.squad_role)
+        if limit is not None and sq_counts.get(self.squad_role, 0) >= limit:
+            await interaction.response.send_message(
+                f"**{self.squad_role}** was just taken — please restart registration.", ephemeral=True
+            )
+            return
+
+        taken_mil = await db.get_taken_military_roles(match_id)
+        if self.military_role in taken_mil:
+            await interaction.response.send_message(
+                f"**{self.military_role}** was just taken — please restart registration.", ephemeral=True
+            )
+            return
+
+        reg_id = await db.create_registration(
+            match_id, interaction.user.id,
+            primary_c["name"],
+            secondary_c["name"] if secondary_c else None,
+            self.military_role, self.squad_role,
+        )
+        if reg_id is None:
+            await interaction.response.send_message("You're already registered.", ephemeral=True)
+            return
+
+        card_embed = _build_card(interaction.user, primary_c, secondary_c, self.military_role, self.squad_role)
+        card_view  = RegistrationCardView(reg_id)
+
+        await interaction.response.edit_message(
+            embed=discord.Embed(title="✅  Registered!", color=discord.Color.green()),
+            view=None,
+        )
+        msg = await interaction.followup.send(embed=card_embed, view=card_view)
+        await db.update_registration_message(reg_id, msg.id)
+
+
+# ── Step 2b: country name modal (Spy only) ────────────────────────────────────
 
 class _CountryModal(discord.ui.Modal):
     def __init__(self, match: dict):
@@ -337,6 +493,12 @@ class _WithdrawButton(discord.ui.Button):
             return
 
         match = await db.get_match_by_channel(interaction.channel_id)
+        if match and match["leader_id"] == interaction.user.id:
+            await interaction.response.send_message(
+                "As the Match Leader you cannot withdraw — use `/cancelmatch` to cancel the match.",
+                ephemeral=True,
+            )
+            return
         if match and match["status"] == "locked":
             await interaction.response.send_message(
                 "The roster is locked — contact the Map Leader to withdraw.", ephemeral=True
