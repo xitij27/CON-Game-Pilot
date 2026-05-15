@@ -1,0 +1,253 @@
+from __future__ import annotations
+
+import asyncio
+import discord
+from discord.ext import commands
+
+import config
+import database as db
+from data.game_data import get_countries
+from views.setup_views import SetupWizard
+from views.register_view import RegisterMatchView
+from views.roster_view import RosterPanel
+
+DOCTRINE_EMOJI = {"Western": "🟦", "Eastern": "🟥", "European": "🟨"}
+
+
+class MatchCog(commands.Cog):
+    def __init__(self, bot: discord.Bot):
+        self.bot = bot
+
+    def _has_rank(self, member: discord.Member) -> bool:
+        return any(r.name in config.ALLOWED_RANKS for r in member.roles)
+
+    def _is_admin(self, member: discord.Member) -> bool:
+        return any(r.name in config.ADMIN_ROLES for r in member.roles)
+
+    # ── /creatematch ──────────────────────────────────────────────────────────
+
+    @discord.slash_command(
+        name="creatematch",
+        description="Start a new map match (Corporal+ only)",
+    )
+    async def creatematch(self, ctx: discord.ApplicationContext) -> None:
+        if not self._has_rank(ctx.author):
+            await ctx.respond(
+                f"You need at least **{config.ALLOWED_RANKS[0]}** rank to create a match.",
+                ephemeral=True,
+            )
+            return
+
+        existing = await db.get_open_match_by_leader(ctx.author.id, ctx.guild_id)
+        if existing:
+            await ctx.respond(
+                "You already have an open match. Use `/cancelmatch` in that channel first.",
+                ephemeral=True,
+            )
+            return
+
+        wizard = SetupWizard(ctx.author, self._wizard_confirmed)
+        embed = discord.Embed(
+            title="🗺️ New Match Setup",
+            description="Choose a **Game Type** to begin.",
+            color=discord.Color.blue(),
+        )
+        embed.set_footer(text="Game Type → Speed → Region → Confirm")
+        await ctx.respond(embed=embed, view=wizard, ephemeral=True)
+
+    async def _wizard_confirmed(
+        self, interaction: discord.Interaction, wizard: SetupWizard
+    ) -> None:
+        guild = interaction.guild
+
+        scale = config.GAME_TYPE_SCALE.get(wizard.game_type, "1X")
+        category_name = config.SCALE_CATEGORIES.get(scale, "1X GAMES")
+        category = discord.utils.get(guild.categories, name=category_name)
+        if not category:
+            category = await guild.create_category(category_name)
+
+        safe_name = (
+            f"{wizard.game_type}-{wizard.region}"
+            .lower()
+            .replace(" ", "-")
+            .replace(".", "")
+        )
+        channel = await guild.create_text_channel(
+            name=safe_name,
+            category=category,
+            topic=(
+                f"{wizard.game_type}  |  {wizard.region}  "
+                f"|  Led by {interaction.user.display_name}"
+            ),
+        )
+
+        match_id = await db.create_match(
+            channel.id, guild.id, interaction.user.id,
+            wizard.game_type, wizard.region,
+        )
+
+        countries = get_countries(wizard.game_type, wizard.region)
+        roster_embed = self._build_roster_embed(wizard, interaction.user, countries)
+        view = RegisterMatchView(channel.id)
+        msg = await channel.send(embed=roster_embed, view=view)
+        await msg.pin()
+        self.bot.add_view(view)
+
+        # Optional announcement
+        ann_ch = discord.utils.get(guild.text_channels, name=config.NEW_MAP_CHANNEL)
+        if ann_ch:
+            await ann_ch.send(
+                embed=discord.Embed(
+                    title="🗺️  New Match Starting!",
+                    description=(
+                        f"**{wizard.game_type}**  ·  {wizard.region}\n"
+                        f"Leader: {interaction.user.mention}\n\n"
+                        f"Head to {channel.mention} to register!"
+                    ),
+                    color=discord.Color.green(),
+                )
+            )
+
+        await interaction.response.edit_message(
+            embed=discord.Embed(
+                title="✅  Match created!",
+                description=f"Channel: {channel.mention}",
+                color=discord.Color.green(),
+            ),
+            view=None,
+        )
+
+    # ── roster embed builder ──────────────────────────────────────────────────
+
+    def _build_roster_embed(
+        self,
+        wizard: SetupWizard,
+        leader: discord.Member,
+        countries: list[dict],
+    ) -> discord.Embed:
+        embed = discord.Embed(
+            title=f"🗺️  {wizard.game_type}  —  {wizard.region}",
+            description=f"**Leader:** {leader.mention}",
+            color=discord.Color.blue(),
+        )
+
+        if countries:
+            lines = [
+                f"{DOCTRINE_EMOJI.get(c['doctrine'], '⬜')} **{c['name']}**  ·  "
+                f"{c['doctrine']}  ·  {c['cities']} cities"
+                for c in countries
+            ]
+            embed.add_field(name="Available Countries", value="\n".join(lines), inline=False)
+        else:
+            embed.add_field(name="Available Countries", value="*(data not yet loaded)*", inline=False)
+
+        embed.add_field(
+            name="Military Roles  (one each)",
+            value="  ·  ".join(config.MILITARY_ROLES),
+            inline=False,
+        )
+        embed.add_field(
+            name="Squad Roles",
+            value=(
+                "1× Leader  ·  1× Scout  ·  1× Spy *(optional)*  ·  ∞ Soldiers\n"
+                "-# Spy may pick from any country in the full game type map."
+            ),
+            inline=False,
+        )
+        embed.set_footer(text="Click Register below to join.")
+        return embed
+
+    # ── /roster ───────────────────────────────────────────────────────────────
+
+    @discord.slash_command(
+        name="roster",
+        description="Open the roster management panel (Map Leader / Admin only)",
+    )
+    async def roster(self, ctx: discord.ApplicationContext) -> None:
+        match = await db.get_match_by_channel(ctx.channel_id)
+        if not match:
+            await ctx.respond("This isn't a match channel.", ephemeral=True)
+            return
+
+        if match["leader_id"] != ctx.author.id and not self._is_admin(ctx.author):
+            await ctx.respond("Only the Map Leader or an Admin can open the roster panel.", ephemeral=True)
+            return
+
+        regs = await db.get_registrations(match["id"])
+        members = {r["user_id"]: ctx.guild.get_member(r["user_id"]) for r in regs}
+
+        panel = RosterPanel(match, regs, members)
+        await ctx.respond(embed=panel.build_embed(), view=panel, ephemeral=True)
+
+    # ── /cancelmatch ──────────────────────────────────────────────────────────
+
+    @discord.slash_command(
+        name="cancelmatch",
+        description="Cancel this match and delete the channel",
+    )
+    async def cancelmatch(self, ctx: discord.ApplicationContext) -> None:
+        match = await db.get_match_by_channel(ctx.channel_id)
+        if not match:
+            await ctx.respond("This isn't a match channel.", ephemeral=True)
+            return
+
+        if match["leader_id"] != ctx.author.id and not self._is_admin(ctx.author):
+            await ctx.respond("Only the Map Leader or an Admin can cancel this match.", ephemeral=True)
+            return
+
+        await ctx.respond(
+            "Cancel this match and **delete the channel**?",
+            view=_CancelConfirmView(match),
+            ephemeral=True,
+        )
+
+    # ── /withdraw ─────────────────────────────────────────────────────────────
+
+    @discord.slash_command(
+        name="withdraw",
+        description="Withdraw your registration from this match",
+    )
+    async def withdraw(self, ctx: discord.ApplicationContext) -> None:
+        match = await db.get_match_by_channel(ctx.channel_id)
+        if not match:
+            await ctx.respond("This isn't a match channel.", ephemeral=True)
+            return
+        if match["status"] == "locked":
+            await ctx.respond("The roster is locked — contact the Map Leader.", ephemeral=True)
+            return
+
+        reg = await db.get_registration(match["id"], ctx.author.id)
+        if not reg:
+            await ctx.respond("You aren't registered for this match.", ephemeral=True)
+            return
+
+        await db.withdraw_registration(reg["id"])
+        await ctx.respond("You've withdrawn from this match.", ephemeral=True)
+
+
+# ── cancel-match confirm view ─────────────────────────────────────────────────
+
+class _CancelConfirmView(discord.ui.View):
+    def __init__(self, match: dict):
+        super().__init__(timeout=60)
+        self.match = match
+
+    @discord.ui.button(label="Yes, Cancel Match", style=discord.ButtonStyle.danger)
+    async def confirm(self, button: discord.ui.Button, interaction: discord.Interaction) -> None:
+        await db.update_match_status(self.match["id"], "cancelled")
+        channel = interaction.channel
+        await interaction.response.send_message(
+            "Match cancelled. Channel deletes in 5 seconds…", ephemeral=True
+        )
+        self.stop()
+        await asyncio.sleep(5)
+        await channel.delete(reason="Match cancelled by leader/admin")
+
+    @discord.ui.button(label="Keep Match", style=discord.ButtonStyle.secondary)
+    async def keep(self, button: discord.ui.Button, interaction: discord.Interaction) -> None:
+        await interaction.response.edit_message(content="Cancellation aborted.", view=None)
+        self.stop()
+
+
+def setup(bot: discord.Bot) -> None:
+    bot.add_cog(MatchCog(bot))
