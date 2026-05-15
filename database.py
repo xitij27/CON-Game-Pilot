@@ -36,6 +36,14 @@ async def init_db() -> None:
         """)
         await db.commit()
 
+    # Drop stale speed column if present from an older schema version
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("PRAGMA table_info(matches)") as cur:
+            cols = {row[1] for row in await cur.fetchall()}
+        if "speed" in cols:
+            await db.execute("ALTER TABLE matches DROP COLUMN speed")
+            await db.commit()
+
 
 # ── matches ──────────────────────────────────────────────────────────────────
 
