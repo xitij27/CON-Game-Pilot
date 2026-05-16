@@ -49,7 +49,7 @@ class SetupWizard(discord.ui.View):
         self._date: Optional[str] = None         # ISO date "YYYY-MM-DD" (local)
         self._hour: Optional[int] = None         # local hour
         self._minute: Optional[int] = None       # 0, 15, 30, or 45
-        self._duration_minutes: Optional[int] = None
+        self._duration_minutes: int = 60
         self._at_time_step: bool = False         # disambiguates back-nav at tz vs time step
         self._on_confirm = on_confirm
         self._add_game_type_select()
@@ -135,32 +135,18 @@ class SetupWizard(discord.ui.View):
         minute_sel.callback = self._on_minute
         self.add_item(minute_sel)
 
-        # Duration
-        durations = [
-            (30, "30 minutes"), (60, "1 hour"), (90, "1 hr 30 min"),
-            (120, "2 hours"), (150, "2 hr 30 min"), (180, "3 hours"),
-            (240, "4 hours"), (300, "5 hours"), (360, "6 hours"),
-        ]
-        dur_options = [
-            discord.SelectOption(label=label, value=str(mins), default=(self._duration_minutes == mins))
-            for mins, label in durations
-        ]
-        dur_sel = discord.ui.Select(placeholder="⌛  Duration...", options=dur_options, row=3)
-        dur_sel.callback = self._on_duration
-        self.add_item(dur_sel)
-
-        # Confirm button — disabled until all four are chosen
-        all_set = all(x is not None for x in (self._date, self._hour, self._minute, self._duration_minutes))
+        # Confirm button — disabled until date, hour, and minute are chosen
+        all_set = all(x is not None for x in (self._date, self._hour, self._minute))
         confirm_btn = discord.ui.Button(
             label="Confirm Time →",
             style=discord.ButtonStyle.primary,
             disabled=not all_set,
-            row=4,
+            row=3,
         )
         confirm_btn.callback = self._on_time_confirm
         self.add_item(confirm_btn)
 
-        back_btn = discord.ui.Button(label="Back", style=discord.ButtonStyle.secondary, emoji="◀️", row=4)
+        back_btn = discord.ui.Button(label="Back", style=discord.ButtonStyle.secondary, emoji="◀️", row=3)
         back_btn.callback = self._on_back
         self.add_item(back_btn)
 
@@ -215,7 +201,7 @@ class SetupWizard(discord.ui.View):
         self._date = None
         self._hour = None
         self._minute = None
-        self._duration_minutes = None
+
         self.start_time = None
         self.end_time = None
         self._at_time_step = False
@@ -230,7 +216,7 @@ class SetupWizard(discord.ui.View):
         self._date = None
         self._hour = None
         self._minute = None
-        self._duration_minutes = None
+
         self._at_time_step = True
         self._add_time_selects()
         sign = "+" if self._tz_offset >= 0 else ""
@@ -276,16 +262,6 @@ class SetupWizard(discord.ui.View):
             view=self,
         )
 
-    async def _on_duration(self, interaction: discord.Interaction) -> None:
-        self._duration_minutes = int(interaction.data["values"][0])
-        self._add_time_selects()
-        sign = "+" if self._tz_offset >= 0 else ""
-        await interaction.response.edit_message(
-            embed=self._step_embed(
-                "Time", f"All times are in **UTC{sign}{self._tz_offset}** (your local time).", 4
-            ),
-            view=self,
-        )
 
     async def _on_time_confirm(self, interaction: discord.Interaction) -> None:
         # Build local datetime then shift to UTC
@@ -341,7 +317,7 @@ class SetupWizard(discord.ui.View):
             self._date = None
             self._hour = None
             self._minute = None
-            self._duration_minutes = None
+    
             self._at_time_step = False
             self._add_timezone_select()
             await interaction.response.edit_message(

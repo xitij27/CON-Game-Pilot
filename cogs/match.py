@@ -45,7 +45,7 @@ class MatchCog(commands.Cog):
             description="Choose a **Game Type** to begin.",
             color=discord.Color.blue(),
         )
-        embed.set_footer(text="Game Type → Region → Confirm")
+        embed.set_footer(text="Game Type → Region → Timezone → Time → Confirm")
         await ctx.followup.send(embed=embed, view=wizard, ephemeral=True)
 
     async def _wizard_confirmed(
