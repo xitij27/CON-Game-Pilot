@@ -126,6 +126,25 @@ async def create_registration(
     military_role: str, squad_role: str,
 ) -> Optional[int]:
     async with aiosqlite.connect(DB_PATH) as db:
+        # Re-registration after withdrawal: update the existing row rather than insert
+        async with db.execute(
+            "SELECT id FROM registrations WHERE match_id = ? AND user_id = ? AND status = 'withdrawn'",
+            (match_id, user_id),
+        ) as cur:
+            withdrawn = await cur.fetchone()
+
+        if withdrawn:
+            reg_id = withdrawn[0]
+            await db.execute(
+                "UPDATE registrations "
+                "SET primary_country = ?, secondary_country = ?, military_role = ?, "
+                "    squad_role = ?, status = 'pending', message_id = NULL "
+                "WHERE id = ?",
+                (primary_country, secondary_country, military_role, squad_role, reg_id),
+            )
+            await db.commit()
+            return reg_id
+
         try:
             cur = await db.execute(
                 "INSERT INTO registrations "
