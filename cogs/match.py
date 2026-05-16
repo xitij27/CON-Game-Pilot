@@ -39,14 +39,6 @@ class MatchCog(commands.Cog):
             )
             return
 
-        existing = await db.get_open_match_by_leader(ctx.author.id, ctx.guild_id)
-        if existing:
-            await ctx.followup.send(
-                "You already have an open match. Use `/cancelgame` in that channel first.",
-                ephemeral=True,
-            )
-            return
-
         wizard = SetupWizard(ctx.author, self._wizard_confirmed)
         embed = discord.Embed(
             title="🗺️ New Match Setup",
@@ -118,6 +110,27 @@ class MatchCog(commands.Cog):
         self.bot.add_view(view)
         await db.set_roster_message_id(match_id, msg.id)
 
+        # Discord scheduled event using the times the leader picked in the wizard.
+        country_lines = "\n".join(
+            f"{DOCTRINE_EMOJI.get(c['doctrine'], '⬜')} {c['name']} ({c['doctrine']})"
+            for c in countries
+        ) or "*(no region data yet)*"
+        event_description = (
+            f"{wizard.game_type} · {wizard.region}\n"
+            f"Led by {interaction.user.display_name}\n\n"
+            f"{country_lines}"
+        )
+        try:
+            await guild.create_scheduled_event(
+                name=f"{wizard.game_type} — {wizard.region}",
+                description=event_description,
+                start_time=wizard.start_time,
+                end_time=wizard.end_time,
+                location=channel.name,
+            )
+        except discord.HTTPException:
+            pass
+
         # Optional announcement
         ann_ch = discord.utils.get(guild.text_channels, name=config.NEW_MAP_CHANNEL)
         if ann_ch:
@@ -174,7 +187,7 @@ class MatchCog(commands.Cog):
         embed.add_field(
             name="Squad Roles",
             value=(
-                "1× Leader  ·  1× Scout  ·  1× Spy *(optional)*  ·  ∞ Soldiers\n"
+                "1× Scout  ·  1× Spy *(optional)*  ·  ∞ Soldiers\n"
                 "-# Spy may pick from any country in the full game type map."
             ),
             inline=False,
