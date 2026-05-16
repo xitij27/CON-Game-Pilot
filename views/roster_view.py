@@ -168,6 +168,16 @@ class _LockConfirmView(discord.ui.View):
 
         await channel.edit(overwrites=overwrites)
 
+        # Remove the Register button from the pinned roster message so it can't
+        # be clicked on a locked match (would cause "interaction failed" after restart).
+        roster_msg_id = panel.match.get("roster_message_id")
+        if roster_msg_id:
+            try:
+                roster_msg = await channel.fetch_message(roster_msg_id)
+                await roster_msg.edit(view=None)
+            except (discord.NotFound, discord.Forbidden):
+                pass
+
         await interaction.followup.send("Roster locked successfully!", ephemeral=True)
         self.stop()
 

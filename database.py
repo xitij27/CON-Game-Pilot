@@ -94,6 +94,13 @@ async def get_open_matches() -> list[dict]:
             return [dict(r) for r in await cur.fetchall()]
 
 
+async def get_non_cancelled_matches() -> list[dict]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute("SELECT * FROM matches WHERE status != 'cancelled'") as cur:
+            return [dict(r) for r in await cur.fetchall()]
+
+
 async def update_match_status(match_id: int, status: str) -> None:
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("UPDATE matches SET status = ? WHERE id = ?", (status, match_id))
@@ -185,7 +192,7 @@ async def get_all_active_registrations() -> list[dict]:
     async with aiosqlite.connect(DB_PATH) as db:
         db.row_factory = aiosqlite.Row
         async with db.execute(
-            "SELECT * FROM registrations WHERE status = 'pending'"
+            "SELECT * FROM registrations WHERE status != 'withdrawn'"
         ) as cur:
             return [dict(r) for r in await cur.fetchall()]
 

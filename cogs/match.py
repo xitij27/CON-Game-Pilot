@@ -381,8 +381,14 @@ class MatchCog(commands.Cog):
                 ephemeral=True,
             )
             return
-        if match["status"] == "locked":
-            await ctx.followup.send("The roster is locked — contact the Map Leader.", ephemeral=True)
+        if match["status"] != "open":
+            if match["status"] in ("won", "lost"):
+                msg = "This game has already ended — withdrawal is not possible."
+            elif match["status"] == "started":
+                msg = "This game is already in progress — withdrawal is not possible."
+            else:
+                msg = "The roster is locked — withdrawal is not possible."
+            await ctx.followup.send(msg, ephemeral=True)
             return
 
         reg = await db.get_registration(match["id"], ctx.author.id)

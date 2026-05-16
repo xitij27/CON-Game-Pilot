@@ -75,27 +75,39 @@ class _RegisterButton(discord.ui.Button):
         )
 
     async def callback(self, interaction: discord.Interaction) -> None:
-        match = await db.get_match_by_channel(interaction.channel_id)
-        if not match:
-            await interaction.response.send_message("This match no longer exists.", ephemeral=True)
-            return
-        if match["status"] != "open":
-            await interaction.response.send_message("This match's roster is locked.", ephemeral=True)
-            return
+        try:
+            match = await db.get_match_by_channel(interaction.channel_id)
+            if not match:
+                await interaction.response.send_message("This match no longer exists.", ephemeral=True)
+                return
+            if match["status"] != "open":
+                if match["status"] in ("won", "lost"):
+                    msg = "This game has already ended — registration is closed."
+                elif match["status"] == "started":
+                    msg = "This game is already in progress — registration is closed."
+                else:
+                    msg = "Registration is closed — the roster for this match has been locked."
+                await interaction.response.send_message(msg, ephemeral=True)
+                return
 
-        existing = await db.get_registration(match["id"], interaction.user.id)
-        if existing:
-            await interaction.response.send_message(
-                "You're already registered. Use `/withdraw` or the **Withdraw** button on your card to opt out.",
-                ephemeral=True,
-            )
-            return
+            existing = await db.get_registration(match["id"], interaction.user.id)
+            if existing:
+                await interaction.response.send_message(
+                    "You're already registered. Use `/withdraw` or the **Withdraw** button on your card to opt out.",
+                    ephemeral=True,
+                )
+                return
 
-        sq_counts = await db.get_squad_role_counts(match["id"])
-        taken_mil = await db.get_taken_military_roles(match["id"])
-        is_leader = interaction.user.id == match["leader_id"]
-        view = _RoleSelectionView(match, sq_counts, taken_mil, is_leader=is_leader)
-        await interaction.response.send_message(embed=view.build_embed(), view=view, ephemeral=True)
+            sq_counts = await db.get_squad_role_counts(match["id"])
+            taken_mil = await db.get_taken_military_roles(match["id"])
+            is_leader = interaction.user.id == match["leader_id"]
+            view = _RoleSelectionView(match, sq_counts, taken_mil, is_leader=is_leader)
+            await interaction.response.send_message(embed=view.build_embed(), view=view, ephemeral=True)
+        except Exception:
+            if not interaction.response.is_done():
+                await interaction.response.send_message(
+                    "Something went wrong. Please try again.", ephemeral=True
+                )
 
 
 # ── Step 1: role selects ──────────────────────────────────────────────────────
@@ -590,45 +602,54 @@ class _WithdrawButton(discord.ui.Button):
         self._reg_id = reg_id
 
     async def callback(self, interaction: discord.Interaction) -> None:
-        reg = await _fetch_reg(self._reg_id)
-        if not reg:
-            await interaction.response.send_message("Registration not found.", ephemeral=True)
-            return
-        if reg["user_id"] != interaction.user.id:
-            await interaction.response.send_message(
-                "Only the registered player can withdraw.", ephemeral=True
+        try:
+            reg = await _fetch_reg(self._reg_id)
+            if not reg:
+                await interaction.response.send_message("Registration not found.", ephemeral=True)
+                return
+            if reg["user_id"] != interaction.user.id:
+                await interaction.response.send_message(
+                    "Only the registered player can withdraw.", ephemeral=True
+                )
+                return
+            if reg["status"] == "withdrawn":
+                await interaction.response.send_message("Already withdrawn.", ephemeral=True)
+                return
+
+            match = await db.get_match_by_channel(interaction.channel_id)
+            if match and match["leader_id"] == interaction.user.id:
+                await interaction.response.send_message(
+                    "As the Match Leader you cannot withdraw — use `/cancelgame` to cancel the match.",
+                    ephemeral=True,
+                )
+                return
+            if match and match["status"] != "open":
+                if match["status"] in ("won", "lost"):
+                    msg = "This game has already ended — withdrawal is not possible."
+                elif match["status"] == "started":
+                    msg = "This game is already in progress — withdrawal is not possible."
+                else:
+                    msg = "The roster is locked — withdrawal is not possible."
+                await interaction.response.send_message(msg, ephemeral=True)
+                return
+
+            await db.withdraw_registration(self._reg_id)
+
+            orig = interaction.message.embeds[0]
+            struck = discord.Embed(
+                title=f"~~{orig.title}~~  —  WITHDRAWN",
+                color=discord.Color.dark_grey(),
             )
-            return
-        if reg["status"] == "withdrawn":
-            await interaction.response.send_message("Already withdrawn.", ephemeral=True)
-            return
+            await interaction.message.edit(embed=struck, view=None)
+            await interaction.response.send_message("You've withdrawn from this match.", ephemeral=True)
 
-        match = await db.get_match_by_channel(interaction.channel_id)
-        if match and match["leader_id"] == interaction.user.id:
-            await interaction.response.send_message(
-                "As the Match Leader you cannot withdraw — use `/cancelgame` to cancel the match.",
-                ephemeral=True,
-            )
-            return
-        if match and match["status"] == "locked":
-            await interaction.response.send_message(
-                "The roster is locked — contact the Map Leader to withdraw.", ephemeral=True
-            )
-            return
-
-        await db.withdraw_registration(self._reg_id)
-
-        # Strike-through the card
-        orig = interaction.message.embeds[0]
-        struck = discord.Embed(
-            title=f"~~{orig.title}~~  —  WITHDRAWN",
-            color=discord.Color.dark_grey(),
-        )
-        await interaction.message.edit(embed=struck, view=None)
-        await interaction.response.send_message("You've withdrawn from this match.", ephemeral=True)
-
-        if match:
-            await _update_roster_embed(match, interaction.channel)
+            if match:
+                await _update_roster_embed(match, interaction.channel)
+        except Exception:
+            if not interaction.response.is_done():
+                await interaction.response.send_message(
+                    "Something went wrong. Please try again.", ephemeral=True
+                )
 
 
 async def _fetch_reg(reg_id: int) -> Optional[dict]:

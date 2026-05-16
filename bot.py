@@ -42,17 +42,21 @@ class CommandPost(discord.Bot):
             print(f"[commandpost] ERROR syncing commands: {e}", flush=True)
 
     async def _restore_views(self) -> None:
-        open_matches = await db.get_open_matches()
-        for match in open_matches:
+        # Register views for every non-cancelled match so that clicking the
+        # Register button on locked/started/ended channels returns a proper
+        # "game has ended" message instead of Discord's "interaction failed".
+        all_matches = await db.get_non_cancelled_matches()
+        for match in all_matches:
             self.add_view(RegisterMatchView(match["channel_id"]))
 
         active_regs = await db.get_all_active_registrations()
         for reg in active_regs:
             self.add_view(RegistrationCardView(reg["id"]))
 
+        open_count = sum(1 for m in all_matches if m["status"] == "open")
         print(
-            f"[commandpost] Restored {len(open_matches)} match view(s) "
-            f"and {len(active_regs)} registration card view(s).",
+            f"[commandpost] Restored {len(all_matches)} match view(s) "
+            f"({open_count} open) and {len(active_regs)} registration card view(s).",
             flush=True,
         )
 
