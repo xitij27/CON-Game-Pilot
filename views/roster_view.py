@@ -157,12 +157,6 @@ class _LockConfirmView(discord.ui.View):
                     overwrites[m] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
                     selected_members.append(m)
 
-        scale = config.GAME_TYPE_SCALE.get(panel.match["game_type"], "1X")
-        category_name = config.SCALE_CATEGORIES.get(scale, "1X GAMES")
-        target_category = discord.utils.get(guild.categories, name=category_name)
-        if not target_category:
-            target_category = await guild.create_category(category_name)
-
         mentions = " ".join(m.mention for m in selected_members)
         await channel.send(
             embed=discord.Embed(
@@ -172,7 +166,7 @@ class _LockConfirmView(discord.ui.View):
             )
         )
 
-        await channel.edit(category=target_category, overwrites=overwrites)
+        await channel.edit(overwrites=overwrites)
 
         await interaction.followup.send("Roster locked successfully!", ephemeral=True)
         self.stop()
