@@ -365,75 +365,81 @@ class _CountrySelectView(discord.ui.View):
         await interaction.response.defer()
 
     async def _on_submit(self, interaction: discord.Interaction) -> None:
-        if not self.primary_country:
-            await interaction.response.send_message(
-                "Please select a Primary Country first.", ephemeral=True
-            )
-            return
-
-        game_type = self.match["game_type"]
-        region    = self.match["region"]
-        match_id  = self.match["id"]
-
-        primary_c   = find_country_in_region(game_type, region, self.primary_country)
-        secondary_c = find_country_in_region(game_type, region, self.secondary_country) if self.secondary_country else None
-
-        if secondary_c and secondary_c["name"].lower() == primary_c["name"].lower():
-            await interaction.response.send_message(
-                "Primary and Secondary country can't be the same.", ephemeral=True
-            )
-            return
-
-        # Race-condition re-check: primary countries must be unique; secondary may not reuse one either
-        taken_primary = await db.get_taken_primary_countries(match_id)
-        if primary_c["name"].lower() in taken_primary:
-            await interaction.response.send_message(
-                f"**{primary_c['name']}** was just claimed — please restart registration.", ephemeral=True
-            )
-            return
-        if secondary_c and secondary_c["name"].lower() in taken_primary:
-            await interaction.response.send_message(
-                f"**{secondary_c['name']}** was just claimed as a primary country — please restart registration.", ephemeral=True
-            )
-            return
-
-        if self.squad_role != "Leader":
-            sq_counts = await db.get_squad_role_counts(match_id)
-            limit = config.SQUAD_ROLE_LIMITS.get(self.squad_role)
-            if limit is not None and sq_counts.get(self.squad_role, 0) >= limit:
+        try:
+            if not self.primary_country:
                 await interaction.response.send_message(
-                    f"**{self.squad_role}** was just taken — please restart registration.", ephemeral=True
+                    "Please select a Primary Country first.", ephemeral=True
                 )
                 return
 
-        if not self.is_leader:
-            taken_mil = await db.get_taken_military_roles(match_id)
-            if self.military_role in taken_mil:
+            game_type = self.match["game_type"]
+            region    = self.match["region"]
+            match_id  = self.match["id"]
+
+            primary_c   = find_country_in_region(game_type, region, self.primary_country)
+            secondary_c = find_country_in_region(game_type, region, self.secondary_country) if self.secondary_country else None
+
+            if secondary_c and secondary_c["name"].lower() == primary_c["name"].lower():
                 await interaction.response.send_message(
-                    f"**{self.military_role}** was just taken — please restart registration.", ephemeral=True
+                    "Primary and Secondary country can't be the same.", ephemeral=True
                 )
                 return
 
-        reg_id = await db.create_registration(
-            match_id, interaction.user.id,
-            primary_c["name"],
-            secondary_c["name"] if secondary_c else None,
-            self.military_role, self.squad_role,
-        )
-        if reg_id is None:
-            await interaction.response.send_message("You're already registered.", ephemeral=True)
-            return
+            # Race-condition re-check: primary countries must be unique; secondary may not reuse one either
+            taken_primary = await db.get_taken_primary_countries(match_id)
+            if primary_c["name"].lower() in taken_primary:
+                await interaction.response.send_message(
+                    f"**{primary_c['name']}** was just claimed — please restart registration.", ephemeral=True
+                )
+                return
+            if secondary_c and secondary_c["name"].lower() in taken_primary:
+                await interaction.response.send_message(
+                    f"**{secondary_c['name']}** was just claimed as a primary country — please restart registration.", ephemeral=True
+                )
+                return
 
-        card_embed = _build_card(interaction.user, primary_c, secondary_c, self.military_role, self.squad_role)
-        card_view  = RegistrationCardView(reg_id)
+            if self.squad_role != "Leader":
+                sq_counts = await db.get_squad_role_counts(match_id)
+                limit = config.SQUAD_ROLE_LIMITS.get(self.squad_role)
+                if limit is not None and sq_counts.get(self.squad_role, 0) >= limit:
+                    await interaction.response.send_message(
+                        f"**{self.squad_role}** was just taken — please restart registration.", ephemeral=True
+                    )
+                    return
 
-        await interaction.response.edit_message(
-            embed=discord.Embed(title="✅  Registered!", color=discord.Color.green()),
-            view=None,
-        )
-        msg = await interaction.followup.send(embed=card_embed, view=card_view)
-        await db.update_registration_message(reg_id, msg.id)
-        await _update_roster_embed(self.match, interaction.channel)
+            if not self.is_leader:
+                taken_mil = await db.get_taken_military_roles(match_id)
+                if self.military_role in taken_mil:
+                    await interaction.response.send_message(
+                        f"**{self.military_role}** was just taken — please restart registration.", ephemeral=True
+                    )
+                    return
+
+            reg_id = await db.create_registration(
+                match_id, interaction.user.id,
+                primary_c["name"],
+                secondary_c["name"] if secondary_c else None,
+                self.military_role, self.squad_role,
+            )
+            if reg_id is None:
+                await interaction.response.send_message("You're already registered.", ephemeral=True)
+                return
+
+            card_embed = _build_card(interaction.user, primary_c, secondary_c, self.military_role, self.squad_role)
+            card_view  = RegistrationCardView(reg_id)
+
+            await interaction.response.edit_message(
+                embed=discord.Embed(title="✅  Registered!", color=discord.Color.green()),
+                view=None,
+            )
+            msg = await interaction.followup.send(embed=card_embed, view=card_view)
+            await db.update_registration_message(reg_id, msg.id)
+            await _update_roster_embed(self.match, interaction.channel)
+        except Exception:
+            if not interaction.response.is_done():
+                await interaction.response.send_message(
+                    "Something went wrong. Please try again.", ephemeral=True
+                )
 
 
 # ── Step 2b: country name modal (Spy only) ────────────────────────────────────
@@ -460,108 +466,114 @@ class _CountryModal(discord.ui.Modal):
         self.add_item(self.secondary)
 
     async def callback(self, interaction: discord.Interaction) -> None:
-        pending = _pending.pop(interaction.user.id, None)
-        if not pending:
-            await interaction.response.send_message(
-                "Session expired — please click Register again.", ephemeral=True
-            )
-            return
+        try:
+            pending = _pending.pop(interaction.user.id, None)
+            if not pending:
+                await interaction.response.send_message(
+                    "Session expired — please click Register again.", ephemeral=True
+                )
+                return
 
-        primary_name  = self.primary.value.strip()
-        secondary_name = self.secondary.value.strip() if self.secondary.value else None
-        squad_role    = pending["squad_role"]
-        military_role = pending["military_role"]
-        match_id      = pending["match_id"]
-        game_type     = pending["game_type"]
-        region        = pending["region"]
-        is_spy        = squad_role == "Spy"
+            primary_name  = self.primary.value.strip()
+            secondary_name = self.secondary.value.strip() if self.secondary.value else None
+            squad_role    = pending["squad_role"]
+            military_role = pending["military_role"]
+            match_id      = pending["match_id"]
+            game_type     = pending["game_type"]
+            region        = pending["region"]
+            is_spy        = squad_role == "Spy"
 
-        # Resolve primary country
-        if is_spy:
-            primary_c = find_country(game_type, primary_name)
-        else:
-            primary_c = find_country_in_region(game_type, region, primary_name)
-
-        if not primary_c:
-            pool = get_all_countries(game_type) if is_spy else get_countries(game_type, region)
-            names = ", ".join(c["name"] for c in pool)
-            await interaction.response.send_message(
-                f"**{primary_name}** isn't a valid country for this match.\nAvailable: {names}",
-                ephemeral=True,
-            )
-            return
-
-        # Resolve secondary country
-        secondary_c: Optional[dict] = None
-        if secondary_name:
+            # Resolve primary country
             if is_spy:
-                secondary_c = find_country(game_type, secondary_name)
+                primary_c = find_country(game_type, primary_name)
             else:
-                secondary_c = find_country_in_region(game_type, region, secondary_name)
+                primary_c = find_country_in_region(game_type, region, primary_name)
 
-            if not secondary_c:
+            if not primary_c:
+                pool = get_all_countries(game_type) if is_spy else get_countries(game_type, region)
+                names = ", ".join(c["name"] for c in pool)
                 await interaction.response.send_message(
-                    f"**{secondary_name}** isn't valid for this match.", ephemeral=True
-                )
-                return
-            if secondary_c["name"].lower() == primary_c["name"].lower():
-                await interaction.response.send_message(
-                    "Primary and Secondary country can't be the same.", ephemeral=True
-                )
-                return
-
-        # Primary countries must be unique; secondary may not reuse a taken primary either
-        taken_primary = await db.get_taken_primary_countries(match_id)
-        if primary_c["name"].lower() in taken_primary:
-            await interaction.response.send_message(
-                f"**{primary_c['name']}** is already claimed as a primary country.", ephemeral=True
-            )
-            return
-        if secondary_c and secondary_c["name"].lower() in taken_primary:
-            await interaction.response.send_message(
-                f"**{secondary_c['name']}** is already claimed as a primary country — choose a different secondary.", ephemeral=True
-            )
-            return
-
-        # Race-condition re-check on roles
-        sq_counts = await db.get_squad_role_counts(match_id)
-        limit = config.SQUAD_ROLE_LIMITS.get(squad_role)
-        if limit is not None and sq_counts.get(squad_role, 0) >= limit:
-            await interaction.response.send_message(
-                f"**{squad_role}** was just taken. Please restart registration.", ephemeral=True
-            )
-            return
-
-        if military_role:
-            taken_mil = await db.get_taken_military_roles(match_id)
-            if military_role in taken_mil:
-                await interaction.response.send_message(
-                    f"**{military_role}** was just taken. Please restart registration.", ephemeral=True
+                    f"**{primary_name}** isn't a valid country for this match.\nAvailable: {names}",
+                    ephemeral=True,
                 )
                 return
 
-        # Commit registration
-        reg_id = await db.create_registration(
-            match_id, interaction.user.id,
-            primary_c["name"],
-            secondary_c["name"] if secondary_c else None,
-            military_role, squad_role,
-        )
-        if reg_id is None:
-            await interaction.response.send_message("You're already registered.", ephemeral=True)
-            return
+            # Resolve secondary country
+            secondary_c: Optional[dict] = None
+            if secondary_name:
+                if is_spy:
+                    secondary_c = find_country(game_type, secondary_name)
+                else:
+                    secondary_c = find_country_in_region(game_type, region, secondary_name)
 
-        # Post card to channel (visible to everyone)
-        card_embed = _build_card(interaction.user, primary_c, secondary_c, military_role, squad_role)
-        card_view = RegistrationCardView(reg_id)
-        await interaction.response.send_message(embed=card_embed, view=card_view)
+                if not secondary_c:
+                    await interaction.response.send_message(
+                        f"**{secondary_name}** isn't valid for this match.", ephemeral=True
+                    )
+                    return
+                if secondary_c["name"].lower() == primary_c["name"].lower():
+                    await interaction.response.send_message(
+                        "Primary and Secondary country can't be the same.", ephemeral=True
+                    )
+                    return
 
-        msg = await interaction.original_response()
-        await db.update_registration_message(reg_id, msg.id)
+            # Primary countries must be unique; secondary may not reuse a taken primary either
+            taken_primary = await db.get_taken_primary_countries(match_id)
+            if primary_c["name"].lower() in taken_primary:
+                await interaction.response.send_message(
+                    f"**{primary_c['name']}** is already claimed as a primary country.", ephemeral=True
+                )
+                return
+            if secondary_c and secondary_c["name"].lower() in taken_primary:
+                await interaction.response.send_message(
+                    f"**{secondary_c['name']}** is already claimed as a primary country — choose a different secondary.", ephemeral=True
+                )
+                return
 
-        match = await db.get_match_by_channel(interaction.channel_id)
-        if match:
-            await _update_roster_embed(match, interaction.channel)
+            # Race-condition re-check on roles
+            sq_counts = await db.get_squad_role_counts(match_id)
+            limit = config.SQUAD_ROLE_LIMITS.get(squad_role)
+            if limit is not None and sq_counts.get(squad_role, 0) >= limit:
+                await interaction.response.send_message(
+                    f"**{squad_role}** was just taken. Please restart registration.", ephemeral=True
+                )
+                return
+
+            if military_role:
+                taken_mil = await db.get_taken_military_roles(match_id)
+                if military_role in taken_mil:
+                    await interaction.response.send_message(
+                        f"**{military_role}** was just taken. Please restart registration.", ephemeral=True
+                    )
+                    return
+
+            # Commit registration
+            reg_id = await db.create_registration(
+                match_id, interaction.user.id,
+                primary_c["name"],
+                secondary_c["name"] if secondary_c else None,
+                military_role, squad_role,
+            )
+            if reg_id is None:
+                await interaction.response.send_message("You're already registered.", ephemeral=True)
+                return
+
+            # Post card to channel (visible to everyone)
+            card_embed = _build_card(interaction.user, primary_c, secondary_c, military_role, squad_role)
+            card_view = RegistrationCardView(reg_id)
+            await interaction.response.send_message(embed=card_embed, view=card_view)
+
+            msg = await interaction.original_response()
+            await db.update_registration_message(reg_id, msg.id)
+
+            match = await db.get_match_by_channel(interaction.channel_id)
+            if match and interaction.channel:
+                await _update_roster_embed(match, interaction.channel)
+        except Exception:
+            if not interaction.response.is_done():
+                await interaction.response.send_message(
+                    "Something went wrong. Please try again.", ephemeral=True
+                )
 
 
 # ── Registration card + withdraw button ───────────────────────────────────────
