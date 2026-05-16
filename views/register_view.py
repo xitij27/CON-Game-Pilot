@@ -447,7 +447,7 @@ class _CountryModal(discord.ui.Modal):
         self.add_item(self.primary)
         self.add_item(self.secondary)
 
-    async def on_submit(self, interaction: discord.Interaction) -> None:
+    async def callback(self, interaction: discord.Interaction) -> None:
         pending = _pending.pop(interaction.user.id, None)
         if not pending:
             await interaction.response.send_message(
