@@ -127,7 +127,14 @@ class _RoleSelectionView(discord.ui.View):
                 or sq_counts.get(r, 0) < config.SQUAD_ROLE_LIMITS[r]
             )
         ]
-        self._available_mil = [r for r in config.MILITARY_ROLES if r not in taken_mil]
+        # Leaders are never blocked by taken military roles — they always see
+        # all roles and bypass the slot check (their slot is always reserved).
+        if is_leader:
+            self._available_mil = list(config.MILITARY_ROLES)
+            self._taken_mil = set(taken_mil)
+        else:
+            self._available_mil = [r for r in config.MILITARY_ROLES if r not in taken_mil]
+            self._taken_mil = set()
         self._rebuild()
 
     def build_embed(self) -> discord.Embed:
@@ -174,7 +181,10 @@ class _RoleSelectionView(discord.ui.View):
                 mil_select = discord.ui.Select(
                     placeholder="Military Role...",
                     options=[
-                        discord.SelectOption(label=r, value=r, default=(r == self.military_role))
+                        discord.SelectOption(
+                            label=r, value=r, default=(r == self.military_role),
+                            description="(taken by another player)" if r in self._taken_mil else "",
+                        )
                         for r in self._available_mil
                     ],
                     custom_id="military_role_select",
@@ -247,8 +257,8 @@ class _RoleSelectionView(discord.ui.View):
                 )
                 return
 
-        # Validate military role slot (Spy has no military role)
-        if not is_spy:
+        # Validate military role slot (Spy has no military role; leader bypasses taken check)
+        if not is_spy and not self.is_leader:
             taken_mil = await db.get_taken_military_roles(match_id)
             if self.military_role in taken_mil:
                 free = ", ".join(r for r in config.MILITARY_ROLES if r not in taken_mil)
@@ -277,7 +287,7 @@ class _RoleSelectionView(discord.ui.View):
                     "No countries are available in this region right now.", ephemeral=True
                 )
                 return
-            view = _CountrySelectView(self.match, primary_available, self.squad_role, self.military_role)
+            view = _CountrySelectView(self.match, primary_available, self.squad_role, self.military_role, is_leader=self.is_leader)
             embed = discord.Embed(
                 title="Registration — Step 2 of 2",
                 description=(
@@ -293,11 +303,12 @@ class _RoleSelectionView(discord.ui.View):
 # ── Step 2a: country dropdowns (non-Spy) ─────────────────────────────────────
 
 class _CountrySelectView(discord.ui.View):
-    def __init__(self, match: dict, primary_available: list[dict], squad_role: str, military_role: str):
+    def __init__(self, match: dict, primary_available: list[dict], squad_role: str, military_role: str, is_leader: bool = False):
         super().__init__(timeout=120)
         self.match = match
         self.squad_role = squad_role
         self.military_role = military_role
+        self.is_leader = is_leader
         self.primary_country: Optional[str] = None
         self.secondary_country: Optional[str] = None
 
@@ -395,12 +406,13 @@ class _CountrySelectView(discord.ui.View):
                 )
                 return
 
-        taken_mil = await db.get_taken_military_roles(match_id)
-        if self.military_role in taken_mil:
-            await interaction.response.send_message(
-                f"**{self.military_role}** was just taken — please restart registration.", ephemeral=True
-            )
-            return
+        if not self.is_leader:
+            taken_mil = await db.get_taken_military_roles(match_id)
+            if self.military_role in taken_mil:
+                await interaction.response.send_message(
+                    f"**{self.military_role}** was just taken — please restart registration.", ephemeral=True
+                )
+                return
 
         reg_id = await db.create_registration(
             match_id, interaction.user.id,
