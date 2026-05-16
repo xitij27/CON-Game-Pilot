@@ -338,6 +338,11 @@ class MatchCog(commands.Cog):
                 ephemeral=True,
             )
             return
+        if match["status"] in ("won", "lost"):
+            await ctx.followup.send(
+                "This game has already ended and cannot be cancelled.", ephemeral=True
+            )
+            return
 
         await ctx.followup.send(
             "Cancel this game and **delete the channel**?",
