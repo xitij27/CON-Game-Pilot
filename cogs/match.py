@@ -218,6 +218,87 @@ class MatchCog(commands.Cog):
         panel = RosterPanel(match, regs, members)
         await ctx.followup.send(embed=panel.build_embed(), view=panel, ephemeral=True)
 
+    # ── /unlockroster ─────────────────────────────────────────────────────────
+
+    @discord.slash_command(
+        name="unlockroster",
+        description="Reopen registration after a roster lock (Map Leader only)",
+    )
+    async def unlockroster(self, ctx: discord.ApplicationContext) -> None:
+        await ctx.defer(ephemeral=True)
+        match = await db.get_match_by_channel(ctx.channel_id)
+        if not match:
+            await ctx.followup.send("This isn't a match channel.", ephemeral=True)
+            return
+        if match["leader_id"] != ctx.author.id:
+            await ctx.followup.send("Only the Map Leader can unlock the roster.", ephemeral=True)
+            return
+        if match["status"] != "locked":
+            status_msgs = {
+                "open":    "The roster isn't locked.",
+                "started": "The game is already in progress — the roster can't be unlocked.",
+                "won":     "This game has already ended.",
+                "lost":    "This game has already ended.",
+            }
+            await ctx.followup.send(
+                status_msgs.get(match["status"], "This match can't be unlocked."), ephemeral=True
+            )
+            return
+
+        guild = ctx.guild
+        channel = ctx.channel
+
+        await db.update_match_status(match["id"], "open")
+        await db.reopen_match_registrations(match["id"])
+
+        # Re-attach the Register button before restoring permissions so it's
+        # visible the moment players regain channel access.
+        roster_msg_id = match.get("roster_message_id")
+        if roster_msg_id:
+            try:
+                roster_msg = await channel.fetch_message(roster_msg_id)
+                view = RegisterMatchView(channel.id)
+                await roster_msg.edit(view=view)
+                self.bot.add_view(view)
+            except (discord.NotFound, discord.Forbidden):
+                pass
+
+        # Restore open-state channel permissions (mirrors _wizard_confirmed).
+        overwrites = {
+            guild.default_role: discord.PermissionOverwrite(
+                read_messages=True,
+                send_messages=True,
+                use_application_commands=False,
+            ),
+            guild.me: discord.PermissionOverwrite(
+                read_messages=True,
+                send_messages=True,
+                manage_messages=True,
+                use_application_commands=True,
+            ),
+            ctx.author: discord.PermissionOverwrite(
+                use_application_commands=True,
+            ),
+        }
+        for role in guild.roles:
+            if role.name in config.ADMIN_ROLES:
+                overwrites[role] = discord.PermissionOverwrite(
+                    use_application_commands=True,
+                )
+        await channel.edit(overwrites=overwrites)
+
+        await channel.send(
+            embed=discord.Embed(
+                title="🔓  Roster Unlocked",
+                description=(
+                    "Registration is open again.\n"
+                    "Players can register using the button above."
+                ),
+                color=discord.Color.green(),
+            )
+        )
+        await ctx.followup.send("Roster unlocked.", ephemeral=True)
+
     # ── /startgame ────────────────────────────────────────────────────────────
 
     @discord.slash_command(
@@ -429,6 +510,11 @@ class MatchCog(commands.Cog):
                 "`/endgame <Won|Lost>` — Declare the outcome; moves channel to Victory Wall or Loss Log\n"
                 "`/cancelgame` — Cancel the game and delete the channel *(pre-start only)*"
             ),
+            inline=False,
+        )
+        embed.add_field(
+            name="🔓  Map Leader only",
+            value="`/unlockroster` — Reopen registration after a roster lock; resets all selections",
             inline=False,
         )
         embed.add_field(

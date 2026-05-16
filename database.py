@@ -221,6 +221,17 @@ async def withdraw_registration(reg_id: int) -> None:
         await db.commit()
 
 
+async def reopen_match_registrations(match_id: int) -> None:
+    """Reset selected/rejected registrations to pending when a roster is unlocked."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE registrations SET status = 'pending' "
+            "WHERE match_id = ? AND status IN ('selected', 'rejected')",
+            (match_id,),
+        )
+        await db.commit()
+
+
 # ── convenience queries ───────────────────────────────────────────────────────
 
 async def get_taken_primary_countries(match_id: int) -> list[str]:
