@@ -186,15 +186,23 @@ class _RoleSelectionView(discord.ui.View):
 
         match_id = self.match["id"]
 
-        # Validate squad role slot
-        sq_counts = await db.get_squad_role_counts(match_id)
-        limit = config.SQUAD_ROLE_LIMITS.get(self.squad_role)
-        if limit is not None and sq_counts.get(self.squad_role, 0) >= limit:
+        # Non-leaders may never claim the Leader squad role
+        if self.squad_role == "Leader" and interaction.user.id != self.match["leader_id"]:
             await interaction.response.send_message(
-                f"The **{self.squad_role}** slot is already filled. Choose a different Squad Role.",
-                ephemeral=True,
+                "Only the Match Leader can take the **Leader** squad role.", ephemeral=True
             )
             return
+
+        # Validate squad role slot (Leader's own slot is always reserved for them)
+        if self.squad_role != "Leader":
+            sq_counts = await db.get_squad_role_counts(match_id)
+            limit = config.SQUAD_ROLE_LIMITS.get(self.squad_role)
+            if limit is not None and sq_counts.get(self.squad_role, 0) >= limit:
+                await interaction.response.send_message(
+                    f"The **{self.squad_role}** slot is already filled. Choose a different Squad Role.",
+                    ephemeral=True,
+                )
+                return
 
         # Validate military role slot
         taken_mil = await db.get_taken_military_roles(match_id)
@@ -225,7 +233,7 @@ class _RoleSelectionView(discord.ui.View):
                     "No countries are available in this region right now.", ephemeral=True
                 )
                 return
-            view = _CountrySelectView(self.match, primary_available, all_countries, self.squad_role, self.military_role)
+            view = _CountrySelectView(self.match, primary_available, self.squad_role, self.military_role)
             embed = discord.Embed(
                 title="Registration — Step 2 of 2",
                 description=(
@@ -241,7 +249,7 @@ class _RoleSelectionView(discord.ui.View):
 # ── Step 2a: country dropdowns (non-Spy) ─────────────────────────────────────
 
 class _CountrySelectView(discord.ui.View):
-    def __init__(self, match: dict, primary_available: list[dict], all_countries: list[dict], squad_role: str, military_role: str):
+    def __init__(self, match: dict, primary_available: list[dict], squad_role: str, military_role: str):
         super().__init__(timeout=120)
         self.match = match
         self.squad_role = squad_role
@@ -257,14 +265,13 @@ class _CountrySelectView(discord.ui.View):
             )
             for c in primary_available[:25]
         ]
-        # Secondary can be any country in the region — overlaps are allowed
         secondary_options = [
             discord.SelectOption(
                 label=c["name"],
                 value=c["name"],
                 description=f"{c['doctrine']} · {c['cities']} cities",
             )
-            for c in all_countries[:24]
+            for c in primary_available[:24]
         ]
 
         primary_sel = discord.ui.Select(
@@ -275,7 +282,7 @@ class _CountrySelectView(discord.ui.View):
         primary_sel.callback = self._on_primary
         self.add_item(primary_sel)
 
-        # Secondary: None option + all region countries (Discord limit is 25 total)
+        # Secondary: None option + available countries (Discord limit is 25 total)
         secondary_sel = discord.ui.Select(
             placeholder="Secondary Country (optional)...",
             options=[discord.SelectOption(label="— None —", value="__none__")] + secondary_options,
@@ -322,21 +329,27 @@ class _CountrySelectView(discord.ui.View):
             )
             return
 
-        # Race-condition re-check: primary countries must be unique
+        # Race-condition re-check: primary countries must be unique; secondary may not reuse one either
         taken_primary = await db.get_taken_primary_countries(match_id)
         if primary_c["name"].lower() in taken_primary:
             await interaction.response.send_message(
                 f"**{primary_c['name']}** was just claimed — please restart registration.", ephemeral=True
             )
             return
-
-        sq_counts = await db.get_squad_role_counts(match_id)
-        limit = config.SQUAD_ROLE_LIMITS.get(self.squad_role)
-        if limit is not None and sq_counts.get(self.squad_role, 0) >= limit:
+        if secondary_c and secondary_c["name"].lower() in taken_primary:
             await interaction.response.send_message(
-                f"**{self.squad_role}** was just taken — please restart registration.", ephemeral=True
+                f"**{secondary_c['name']}** was just claimed as a primary country — please restart registration.", ephemeral=True
             )
             return
+
+        if self.squad_role != "Leader":
+            sq_counts = await db.get_squad_role_counts(match_id)
+            limit = config.SQUAD_ROLE_LIMITS.get(self.squad_role)
+            if limit is not None and sq_counts.get(self.squad_role, 0) >= limit:
+                await interaction.response.send_message(
+                    f"**{self.squad_role}** was just taken — please restart registration.", ephemeral=True
+                )
+                return
 
         taken_mil = await db.get_taken_military_roles(match_id)
         if self.military_role in taken_mil:
@@ -441,11 +454,16 @@ class _CountryModal(discord.ui.Modal):
                 )
                 return
 
-        # Primary countries must be unique; secondary countries may overlap
+        # Primary countries must be unique; secondary may not reuse a taken primary either
         taken_primary = await db.get_taken_primary_countries(match_id)
         if primary_c["name"].lower() in taken_primary:
             await interaction.response.send_message(
                 f"**{primary_c['name']}** is already claimed as a primary country.", ephemeral=True
+            )
+            return
+        if secondary_c and secondary_c["name"].lower() in taken_primary:
+            await interaction.response.send_message(
+                f"**{secondary_c['name']}** is already claimed as a primary country — choose a different secondary.", ephemeral=True
             )
             return
 
@@ -554,7 +572,7 @@ class _WithdrawButton(discord.ui.Button):
         match = await db.get_match_by_channel(interaction.channel_id)
         if match and match["leader_id"] == interaction.user.id:
             await interaction.response.send_message(
-                "As the Match Leader you cannot withdraw — use `/cancelmatch` to cancel the match.",
+                "As the Match Leader you cannot withdraw — use `/cancelgame` to cancel the match.",
                 ephemeral=True,
             )
             return
