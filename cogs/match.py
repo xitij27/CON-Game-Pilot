@@ -240,18 +240,82 @@ class MatchCog(commands.Cog):
         safe_code = code.lower().replace(" ", "-")
         new_name = f"{safe_code}-{safe_leader}"
 
+        scale = config.GAME_TYPE_SCALE.get(match["game_type"], "1X")
+        active_category_name = config.SCALE_CATEGORIES.get(scale, f"{scale} GAMES")
+        active_category = discord.utils.get(guild.categories, name=active_category_name)
+        if not active_category:
+            active_category = await guild.create_category(active_category_name)
+
         await db.set_game_code(match["id"], code)
-        await channel.edit(name=new_name)
-        await channel.send(
+        await channel.edit(name=new_name, category=active_category)
+        msg = await channel.send(
             embed=discord.Embed(
                 title="🎮  Game Found!",
                 description=f"**Game Code:** `{code}`\n\nGood luck everyone!",
                 color=discord.Color.green(),
             )
         )
+        await msg.pin()
         await ctx.followup.send("Game started!", ephemeral=True)
 
-    # ── /cancelmatch ──────────────────────────────────────────────────────────
+    # ── /endgame ──────────────────────────────────────────────────────────────
+
+    @discord.slash_command(
+        name="endgame",
+        description="Declare the game outcome and archive the channel (Map Leader / Admin only)",
+    )
+    async def endgame(
+        self,
+        ctx: discord.ApplicationContext,
+        result: str = discord.Option(description="Game outcome", choices=["Won", "Lost"]),
+    ) -> None:
+        await ctx.defer(ephemeral=True)
+        match = await db.get_match_by_channel(ctx.channel_id)
+        if not match:
+            await ctx.followup.send("This isn't a match channel.", ephemeral=True)
+            return
+        if match["leader_id"] != ctx.author.id and not self._is_admin(ctx.author):
+            await ctx.followup.send(
+                "Only the Map Leader or an Admin can declare the game outcome.", ephemeral=True
+            )
+            return
+        if match["status"] != "started":
+            await ctx.followup.send(
+                "The game must be in progress before declaring an outcome. "
+                "Use `/startgame` first.",
+                ephemeral=True,
+            )
+            return
+
+        if result == "Won":
+            archive_name = config.VICTORY_CATEGORY
+            new_status   = "won"
+            embed = discord.Embed(
+                title="🏆  Victory!",
+                description="This game has been won. Well played!",
+                color=discord.Color.gold(),
+            )
+        else:
+            archive_name = config.LOSS_CATEGORY
+            new_status   = "lost"
+            embed = discord.Embed(
+                title="💀  Defeat",
+                description="This game has been lost. Better luck next time.",
+                color=discord.Color.dark_red(),
+            )
+
+        archive_category = discord.utils.get(ctx.guild.categories, name=archive_name)
+        if not archive_category:
+            archive_category = await ctx.guild.create_category(archive_name)
+
+        await db.update_match_status(match["id"], new_status)
+        await ctx.channel.edit(category=archive_category)
+        await ctx.channel.send(embed=embed)
+        await ctx.followup.send(
+            f"Game declared as **{result}**. Channel moved to **{archive_name}**.", ephemeral=True
+        )
+
+    # ── /cancelgame ───────────────────────────────────────────────────────────
 
     @discord.slash_command(
         name="cancelgame",
@@ -265,11 +329,18 @@ class MatchCog(commands.Cog):
             return
 
         if match["leader_id"] != ctx.author.id and not self._is_admin(ctx.author):
-            await ctx.followup.send("Only the Map Leader or an Admin can cancel this match.", ephemeral=True)
+            await ctx.followup.send("Only the Map Leader or an Admin can cancel this game.", ephemeral=True)
+            return
+
+        if match["status"] == "started":
+            await ctx.followup.send(
+                "The game is already in progress — use `/endgame` to declare the outcome instead.",
+                ephemeral=True,
+            )
             return
 
         await ctx.followup.send(
-            "Cancel this match and **delete the channel**?",
+            "Cancel this game and **delete the channel**?",
             view=_CancelConfirmView(match),
             ephemeral=True,
         )
@@ -330,9 +401,9 @@ class MatchCog(commands.Cog):
             name="🗺️  Map Leader & Admins",
             value=(
                 "`/roster` — Open the roster panel to select players and lock the roster\n"
-                "`/startgame <code>` — Enter the game lobby code once a game is found;\n"
-                "   renames the channel to `code-leadername`\n"
-                "`/cancelgame` — Cancel the match and delete the channel"
+                "`/startgame <code>` — Enter the 8-digit lobby code; moves channel to active category\n"
+                "`/endgame <Won|Lost>` — Declare the outcome; moves channel to Victory Wall or Loss Log\n"
+                "`/cancelgame` — Cancel the game and delete the channel *(pre-start only)*"
             ),
             inline=False,
         )
