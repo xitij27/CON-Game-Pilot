@@ -5,7 +5,7 @@ import database as db
 from views.register_view import RegisterMatchView, RegistrationCardView
 
 
-class StrikeBot(discord.Bot):
+class CommandPost(discord.Bot):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self._initialized = False  # guard against on_ready firing multiple times
@@ -15,31 +15,31 @@ class StrikeBot(discord.Bot):
             return
         self._initialized = True
 
-        print(f"[strikebot] Logged in as {self.user}  (id: {self.user.id})", flush=True)
+        print(f"[commandpost] Logged in as {self.user}  (id: {self.user.id})", flush=True)
 
-        print("[strikebot] Initialising DB...", flush=True)
+        print("[commandpost] Initialising DB...", flush=True)
         await db.init_db()
 
-        print("[strikebot] Loading cogs...", flush=True)
+        print("[commandpost] Loading cogs...", flush=True)
         try:
             self.load_extension("cogs.match")
-            print("[strikebot] Cog loaded OK.", flush=True)
+            print("[commandpost] Cog loaded OK.", flush=True)
         except Exception as e:
             import traceback
-            print(f"[strikebot] ERROR loading cog: {e}", flush=True)
+            print(f"[commandpost] ERROR loading cog: {e}", flush=True)
             traceback.print_exc()
             return
 
-        print("[strikebot] Restoring persistent views...", flush=True)
+        print("[commandpost] Restoring persistent views...", flush=True)
         await self._restore_views()
 
-        print(f"[strikebot] Pending commands: {len(self.pending_application_commands)}", flush=True)
-        print("[strikebot] Syncing commands...", flush=True)
+        print(f"[commandpost] Pending commands: {len(self.pending_application_commands)}", flush=True)
+        print("[commandpost] Syncing commands...", flush=True)
         try:
             await self.sync_commands()
-            print("[strikebot] Commands synced.", flush=True)
+            print("[commandpost] Commands synced.", flush=True)
         except Exception as e:
-            print(f"[strikebot] ERROR syncing commands: {e}", flush=True)
+            print(f"[commandpost] ERROR syncing commands: {e}", flush=True)
 
     async def _restore_views(self) -> None:
         open_matches = await db.get_open_matches()
@@ -51,7 +51,7 @@ class StrikeBot(discord.Bot):
             self.add_view(RegistrationCardView(reg["id"]))
 
         print(
-            f"[strikebot] Restored {len(open_matches)} match view(s) "
+            f"[commandpost] Restored {len(open_matches)} match view(s) "
             f"and {len(active_regs)} registration card view(s).",
             flush=True,
         )
@@ -66,7 +66,7 @@ def main() -> None:
     intents = discord.Intents.default()
     intents.members = True
 
-    bot = StrikeBot(intents=intents, debug_guilds=[config.GUILD_ID])
+    bot = CommandPost(intents=intents, debug_guilds=[config.GUILD_ID])
     bot.run(config.DISCORD_TOKEN)
 
 
