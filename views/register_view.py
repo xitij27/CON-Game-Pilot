@@ -93,34 +93,9 @@ class _RegisterButton(discord.ui.Button):
 
         sq_counts = await db.get_squad_role_counts(match["id"])
         taken_mil = await db.get_taken_military_roles(match["id"])
-
-        available_mil = [r for r in config.MILITARY_ROLES if r not in taken_mil]
-        if not available_mil:
-            await interaction.response.send_message(
-                "All military roles are filled — no spots available.", ephemeral=True
-            )
-            return
-
         is_leader = interaction.user.id == match["leader_id"]
         view = _RoleSelectionView(match, sq_counts, taken_mil, is_leader=is_leader)
-        if is_leader:
-            desc = (
-                f"**{match['game_type']} · {match['region']}**\n\n"
-                "You are the **Match Leader** — Squad Role is set to **Leader** automatically.\n"
-                "Pick your **Military Role**, then click **Continue**."
-            )
-        else:
-            desc = (
-                f"**{match['game_type']} · {match['region']}**\n\n"
-                "Pick your **Military Role** and **Squad Role**, then click **Continue**.\n"
-                "-# Spy role unlocks all countries across the full game type map."
-            )
-        embed = discord.Embed(
-            title="Registration — Step 1 of 2",
-            description=desc,
-            color=discord.Color.blue(),
-        )
-        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+        await interaction.response.send_message(embed=view.build_embed(), view=view, ephemeral=True)
 
 
 # ── Step 1: role selects ──────────────────────────────────────────────────────
@@ -129,37 +104,79 @@ class _RoleSelectionView(discord.ui.View):
     def __init__(self, match: dict, sq_counts: dict, taken_mil: list, is_leader: bool = False):
         super().__init__(timeout=120)
         self.match = match
+        self.is_leader = is_leader
         self.squad_role: Optional[str] = "Leader" if is_leader else None
         self.military_role: Optional[str] = None
+        self._available_squad = [
+            r for r in config.SQUAD_ROLES
+            if r != "Leader"
+            and (
+                config.SQUAD_ROLE_LIMITS.get(r) is None
+                or sq_counts.get(r, 0) < config.SQUAD_ROLE_LIMITS[r]
+            )
+        ]
+        self._available_mil = [r for r in config.MILITARY_ROLES if r not in taken_mil]
+        self._rebuild()
 
-        if not is_leader:
-            available_squad = [
-                r for r in config.SQUAD_ROLES
-                if r != "Leader"
-                and (
-                    config.SQUAD_ROLE_LIMITS.get(r) is None
-                    or sq_counts.get(r, 0) < config.SQUAD_ROLE_LIMITS[r]
-                )
-            ]
+    def build_embed(self) -> discord.Embed:
+        if self.is_leader:
+            desc = (
+                f"**{self.match['game_type']} · {self.match['region']}**\n\n"
+                "You are the **Match Leader** — Squad Role is set to **Leader** automatically.\n"
+                "Pick your **Military Role**, then click **Continue**."
+            )
+        elif self.squad_role == "Spy":
+            desc = (
+                f"**{self.match['game_type']} · {self.match['region']}**\n\n"
+                "**Spy** selected — no military role required.\n"
+                "Click **Continue** to pick your countries."
+            )
+        else:
+            desc = (
+                f"**{self.match['game_type']} · {self.match['region']}**\n\n"
+                "Pick your **Squad Role** and **Military Role**, then click **Continue**.\n"
+                "-# Spy role requires no military role and unlocks all countries across the full map."
+            )
+        return discord.Embed(title="Registration — Step 1 of 2", description=desc, color=discord.Color.blue())
+
+    def _rebuild(self) -> None:
+        self.clear_items()
+
+        if not self.is_leader:
             squad_select = discord.ui.Select(
                 placeholder="Squad Role...",
                 options=[
-                    discord.SelectOption(label=r, value=r, description=_squad_desc(r))
-                    for r in available_squad
+                    discord.SelectOption(
+                        label=r, value=r, description=_squad_desc(r),
+                        default=(r == self.squad_role),
+                    )
+                    for r in self._available_squad
                 ],
                 custom_id="squad_role_select",
             )
             squad_select.callback = self._on_squad_role
             self.add_item(squad_select)
 
-        available_mil = [r for r in config.MILITARY_ROLES if r not in taken_mil]
-        mil_select = discord.ui.Select(
-            placeholder="Military Role...",
-            options=[discord.SelectOption(label=r, value=r) for r in available_mil],
-            custom_id="military_role_select",
-        )
-        mil_select.callback = self._on_military_role
-        self.add_item(mil_select)
+        if self.squad_role != "Spy":
+            if self._available_mil:
+                mil_select = discord.ui.Select(
+                    placeholder="Military Role...",
+                    options=[
+                        discord.SelectOption(label=r, value=r, default=(r == self.military_role))
+                        for r in self._available_mil
+                    ],
+                    custom_id="military_role_select",
+                )
+                mil_select.callback = self._on_military_role
+                self.add_item(mil_select)
+            else:
+                mil_select = discord.ui.Select(
+                    placeholder="No military roles available",
+                    options=[discord.SelectOption(label="—", value="none")],
+                    disabled=True,
+                    custom_id="military_role_select",
+                )
+                self.add_item(mil_select)
 
         continue_btn = discord.ui.Button(
             label="Continue →",
@@ -171,17 +188,31 @@ class _RoleSelectionView(discord.ui.View):
 
     async def _on_squad_role(self, interaction: discord.Interaction) -> None:
         self.squad_role = interaction.data["values"][0]
-        await interaction.response.defer()
+        if self.squad_role == "Spy":
+            self.military_role = None
+        self._rebuild()
+        await interaction.response.edit_message(embed=self.build_embed(), view=self)
 
     async def _on_military_role(self, interaction: discord.Interaction) -> None:
         self.military_role = interaction.data["values"][0]
         await interaction.response.defer()
 
     async def _on_continue(self, interaction: discord.Interaction) -> None:
-        if not self.squad_role or not self.military_role:
+        is_spy = self.squad_role == "Spy"
+        if not self.squad_role:
             await interaction.response.send_message(
-                "Please select both a Squad Role and a Military Role first.", ephemeral=True
+                "Please select a Squad Role first.", ephemeral=True
             )
+            return
+        if not is_spy and not self.military_role:
+            if not self._available_mil:
+                await interaction.response.send_message(
+                    "All military roles are filled. Only **Spy** can still register.", ephemeral=True
+                )
+            else:
+                await interaction.response.send_message(
+                    "Please select a Military Role first.", ephemeral=True
+                )
             return
 
         match_id = self.match["id"]
@@ -204,15 +235,16 @@ class _RoleSelectionView(discord.ui.View):
                 )
                 return
 
-        # Validate military role slot
-        taken_mil = await db.get_taken_military_roles(match_id)
-        if self.military_role in taken_mil:
-            free = ", ".join(r for r in config.MILITARY_ROLES if r not in taken_mil)
-            await interaction.response.send_message(
-                f"**{self.military_role}** is taken. Available: {free or 'none'}",
-                ephemeral=True,
-            )
-            return
+        # Validate military role slot (Spy has no military role)
+        if not is_spy:
+            taken_mil = await db.get_taken_military_roles(match_id)
+            if self.military_role in taken_mil:
+                free = ", ".join(r for r in config.MILITARY_ROLES if r not in taken_mil)
+                await interaction.response.send_message(
+                    f"**{self.military_role}** is taken. Available: {free or 'none'}",
+                    ephemeral=True,
+                )
+                return
 
         if self.squad_role == "Spy":
             # Spy searches across all regions — too many options for a dropdown
@@ -476,12 +508,13 @@ class _CountryModal(discord.ui.Modal):
             )
             return
 
-        taken_mil = await db.get_taken_military_roles(match_id)
-        if military_role in taken_mil:
-            await interaction.response.send_message(
-                f"**{military_role}** was just taken. Please restart registration.", ephemeral=True
-            )
-            return
+        if military_role:
+            taken_mil = await db.get_taken_military_roles(match_id)
+            if military_role in taken_mil:
+                await interaction.response.send_message(
+                    f"**{military_role}** was just taken. Please restart registration.", ephemeral=True
+                )
+                return
 
         # Commit registration
         reg_id = await db.create_registration(
@@ -513,7 +546,7 @@ def _build_card(
     user: discord.Member,
     primary: dict,
     secondary: Optional[dict],
-    military_role: str,
+    military_role: Optional[str],
     squad_role: str,
 ) -> discord.Embed:
     embed = discord.Embed(
@@ -532,8 +565,9 @@ def _build_card(
             value=f"**{secondary['name']}**\n{secondary['doctrine']} · {secondary['cities']} cities",
             inline=True,
         )
-    embed.add_field(name="⚔️ Military", value=military_role, inline=True)
-    embed.add_field(name="🎖️ Squad",    value=squad_role,    inline=True)
+    if military_role:
+        embed.add_field(name="⚔️ Military", value=military_role, inline=True)
+    embed.add_field(name="🎖️ Squad", value=squad_role, inline=True)
     return embed
 
 

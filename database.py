@@ -123,7 +123,7 @@ async def set_game_code(match_id: int, code: str) -> None:
 async def create_registration(
     match_id: int, user_id: int,
     primary_country: str, secondary_country: Optional[str],
-    military_role: str, squad_role: str,
+    military_role: Optional[str], squad_role: str,
 ) -> Optional[int]:
     async with aiosqlite.connect(DB_PATH) as db:
         # Re-registration after withdrawal: update the existing row rather than insert
@@ -133,6 +133,8 @@ async def create_registration(
         ) as cur:
             withdrawn = await cur.fetchone()
 
+        mil = military_role or ""  # Spy has no military role; store "" to satisfy NOT NULL
+
         if withdrawn:
             reg_id = withdrawn[0]
             await db.execute(
@@ -140,7 +142,7 @@ async def create_registration(
                 "SET primary_country = ?, secondary_country = ?, military_role = ?, "
                 "    squad_role = ?, status = 'pending', message_id = NULL "
                 "WHERE id = ?",
-                (primary_country, secondary_country, military_role, squad_role, reg_id),
+                (primary_country, secondary_country, mil, squad_role, reg_id),
             )
             await db.commit()
             return reg_id
@@ -150,7 +152,7 @@ async def create_registration(
                 "INSERT INTO registrations "
                 "(match_id, user_id, primary_country, secondary_country, military_role, squad_role) "
                 "VALUES (?, ?, ?, ?, ?, ?)",
-                (match_id, user_id, primary_country, secondary_country, military_role, squad_role),
+                (match_id, user_id, primary_country, secondary_country, mil, squad_role),
             )
             await db.commit()
             return cur.lastrowid
@@ -221,7 +223,7 @@ async def get_taken_primary_countries(match_id: int) -> list[str]:
 
 async def get_taken_military_roles(match_id: int) -> list[str]:
     regs = await get_registrations(match_id)
-    return [r["military_role"] for r in regs]
+    return [r["military_role"] for r in regs if r["military_role"]]
 
 
 async def get_squad_role_counts(match_id: int) -> dict[str, int]:
