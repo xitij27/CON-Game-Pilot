@@ -42,7 +42,7 @@ class MatchCog(commands.Cog):
         existing = await db.get_open_match_by_leader(ctx.author.id, ctx.guild_id)
         if existing:
             await ctx.followup.send(
-                "You already have an open match. Use `/cancelmatch` in that channel first.",
+                "You already have an open match. Use `/cancelgame` in that channel first.",
                 ephemeral=True,
             )
             return
@@ -214,7 +214,7 @@ class MatchCog(commands.Cog):
     async def startgame(
         self,
         ctx: discord.ApplicationContext,
-        code: discord.Option(str, "Game lobby code", required=True),
+        code: str = discord.Option(description="Game lobby code (8 digits)"),
     ) -> None:
         await ctx.defer(ephemeral=True)
         match = await db.get_match_by_channel(ctx.channel_id)
@@ -226,6 +226,10 @@ class MatchCog(commands.Cog):
             return
         if match["status"] != "locked":
             await ctx.followup.send("The roster must be locked before starting the game.", ephemeral=True)
+            return
+
+        if not (code.isdigit() and len(code) == 8):
+            await ctx.followup.send("Game code must be exactly **8 digits**.", ephemeral=True)
             return
 
         guild = ctx.guild
@@ -250,10 +254,10 @@ class MatchCog(commands.Cog):
     # ── /cancelmatch ──────────────────────────────────────────────────────────
 
     @discord.slash_command(
-        name="cancelmatch",
-        description="Cancel this match and delete the channel",
+        name="cancelgame",
+        description="Cancel this game and delete the channel",
     )
-    async def cancelmatch(self, ctx: discord.ApplicationContext) -> None:
+    async def cancelgame(self, ctx: discord.ApplicationContext) -> None:
         await ctx.defer(ephemeral=True)
         match = await db.get_match_by_channel(ctx.channel_id)
         if not match:
@@ -284,7 +288,7 @@ class MatchCog(commands.Cog):
             return
         if match["leader_id"] == ctx.author.id:
             await ctx.followup.send(
-                "As the Match Leader you cannot withdraw — use `/cancelmatch` to cancel the match.",
+                "As the Match Leader you cannot withdraw — use `/cancelgame` to cancel the match.",
                 ephemeral=True,
             )
             return
@@ -328,7 +332,7 @@ class MatchCog(commands.Cog):
                 "`/roster` — Open the roster panel to select players and lock the roster\n"
                 "`/startgame <code>` — Enter the game lobby code once a game is found;\n"
                 "   renames the channel to `code-leadername`\n"
-                "`/cancelmatch` — Cancel the match and delete the channel"
+                "`/cancelgame` — Cancel the match and delete the channel"
             ),
             inline=False,
         )
