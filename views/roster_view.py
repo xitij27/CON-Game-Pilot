@@ -5,6 +5,7 @@ import discord
 
 import config
 import database as db
+from hub_utils import refresh_hub_card
 
 
 class RosterPanel(discord.ui.View):
@@ -179,6 +180,10 @@ class _LockConfirmView(discord.ui.View):
         )
 
         await channel.edit(overwrites=overwrites)
+
+        match_refreshed = await db.get_match_by_channel(panel.match["channel_id"])
+        if match_refreshed:
+            await refresh_hub_card(interaction.client, match_refreshed)
 
         await interaction.followup.send("Roster locked successfully!", ephemeral=True)
         self.stop()

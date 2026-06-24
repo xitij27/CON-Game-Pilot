@@ -10,6 +10,7 @@ from data.game_data import get_countries
 from views.setup_views import SetupWizard
 from views.register_view import RegisterMatchView, _update_roster_embed
 from views.roster_view import RosterPanel
+from hub_utils import refresh_hub_card, build_match_card_embed
 
 DOCTRINE_EMOJI = {"Western": "🟦", "Eastern": "🟥", "European": "🟨"}
 
@@ -47,6 +48,17 @@ class MatchCog(commands.Cog):
         )
         embed.set_footer(text="Game Type → Region → Timezone → Time → Confirm")
         await ctx.followup.send(embed=embed, view=wizard, ephemeral=True)
+
+    async def creategame_from_interaction(self, interaction: discord.Interaction) -> None:
+        """Entry point for the hub Create Match button (replaces /creategame in the hub flow)."""
+        wizard = SetupWizard(interaction.user, self._wizard_confirmed)
+        embed = discord.Embed(
+            title="🗺️ New Match Setup",
+            description="Choose a **Game Type** to begin.",
+            color=discord.Color.blue(),
+        )
+        embed.set_footer(text="Game Type → Region → Timezone → Time → Confirm")
+        await interaction.response.send_message(embed=embed, view=wizard, ephemeral=True)
 
     async def _wizard_confirmed(
         self, interaction: discord.Interaction, wizard: SetupWizard
@@ -155,6 +167,153 @@ class MatchCog(commands.Cog):
             view=None,
         )
 
+        # Post a match card to the hub channel
+        import config as _cfg
+        hub_channel = discord.utils.get(guild.text_channels, name=_cfg.MATCH_HUB_CHANNEL)
+        if hub_channel:
+            match_row = await db.get_match_by_channel(channel.id)
+            if match_row:
+                from views.hub_view import MatchCardView
+                hub_embed = await build_match_card_embed(match_row, guild)
+                hub_view  = MatchCardView(channel.id)
+                hub_msg   = await hub_channel.send(embed=hub_embed, view=hub_view)
+                self.bot.add_view(hub_view)
+                await db.set_hub_message_id(match_id, hub_msg.id)
+
+    # ── shared action helpers (called by both slash commands and hub buttons) ──
+
+    async def do_start_game(
+        self, interaction: discord.Interaction, match: dict, code: str
+    ) -> None:
+        """Core /startgame logic — usable from slash command or hub modal."""
+        guild   = interaction.guild
+        channel = guild.get_channel(match["channel_id"])
+        leader  = guild.get_member(match["leader_id"])
+        leader_name = leader.display_name if leader else str(match["leader_id"])
+        safe_leader = leader_name.lower().replace(" ", "-").replace(".", "")
+        new_name    = f"{code.lower()}-{safe_leader}"
+
+        scale           = config.GAME_TYPE_SCALE.get(match["game_type"], "1X")
+        active_cat_name = config.SCALE_CATEGORIES.get(scale, f"{scale} GAMES")
+        active_category = discord.utils.get(guild.categories, name=active_cat_name)
+        if not active_category:
+            active_category = await guild.create_category(active_cat_name)
+
+        await db.set_game_code(match["id"], code)
+        if channel:
+            await channel.edit(name=new_name, category=active_category)
+            msg = await channel.send(
+                embed=discord.Embed(
+                    title="🎮  Game Found!",
+                    description=f"**Game Code:** `{code}`\n\nGood luck everyone!",
+                    color=discord.Color.green(),
+                )
+            )
+            await msg.pin()
+
+        match_refreshed = await db.get_match_by_channel(match["channel_id"])
+        if match_refreshed:
+            await refresh_hub_card(interaction.client, match_refreshed)
+
+        if not interaction.response.is_done():
+            await interaction.response.send_message("Game started!", ephemeral=True)
+        else:
+            await interaction.followup.send("Game started!", ephemeral=True)
+
+    async def do_end_game(
+        self, interaction: discord.Interaction, match: dict, result: str
+    ) -> None:
+        """Core /endgame logic — usable from slash command or hub button."""
+        if result == "Won":
+            archive_name = config.VICTORY_CATEGORY
+            new_status   = "won"
+            embed = discord.Embed(
+                title="🏆  Victory!",
+                description="This game has been won. Well played!",
+                color=discord.Color.gold(),
+            )
+        else:
+            archive_name = config.LOSS_CATEGORY
+            new_status   = "lost"
+            embed = discord.Embed(
+                title="💀  Defeat",
+                description="This game has been lost. Better luck next time.",
+                color=discord.Color.dark_red(),
+            )
+
+        archive_category = discord.utils.get(interaction.guild.categories, name=archive_name)
+        if not archive_category:
+            archive_category = await interaction.guild.create_category(archive_name)
+
+        await db.update_match_status(match["id"], new_status)
+        channel = interaction.guild.get_channel(match["channel_id"])
+        if channel:
+            await channel.edit(category=archive_category)
+            await channel.send(embed=embed)
+
+        match_refreshed = await db.get_match_by_channel(match["channel_id"])
+        if match_refreshed:
+            await refresh_hub_card(interaction.client, match_refreshed)
+
+        result_text = f"Game declared as **{result}**. Channel moved to **{archive_name}**."
+        if not interaction.response.is_done():
+            await interaction.response.send_message(result_text, ephemeral=True)
+        else:
+            await interaction.followup.send(result_text, ephemeral=True)
+
+    async def do_unlock_roster(
+        self, interaction: discord.Interaction, match: dict
+    ) -> None:
+        """Core /unlockroster logic — usable from slash command or hub button."""
+        guild   = interaction.guild
+        channel = guild.get_channel(match["channel_id"])
+
+        await db.update_match_status(match["id"], "open")
+        await db.reopen_match_registrations(match["id"])
+
+        if channel:
+            roster_msg_id = match.get("roster_message_id")
+            if roster_msg_id:
+                try:
+                    roster_msg = await channel.fetch_message(roster_msg_id)
+                    view = RegisterMatchView(channel.id)
+                    await roster_msg.edit(view=view)
+                    self.bot.add_view(view)
+                except (discord.NotFound, discord.Forbidden):
+                    pass
+
+            overwrites = {
+                guild.default_role: discord.PermissionOverwrite(
+                    read_messages=True, send_messages=True, use_application_commands=False,
+                ),
+                guild.me: discord.PermissionOverwrite(
+                    read_messages=True, send_messages=True,
+                    manage_messages=True, use_application_commands=True,
+                ),
+                interaction.user: discord.PermissionOverwrite(use_application_commands=True),
+            }
+            for role in guild.roles:
+                if role.name in config.ADMIN_ROLES:
+                    overwrites[role] = discord.PermissionOverwrite(use_application_commands=True)
+            await channel.edit(overwrites=overwrites)
+
+            await channel.send(
+                embed=discord.Embed(
+                    title="🔓  Roster Unlocked",
+                    description="Registration is open again.\nPlayers can register using the button above.",
+                    color=discord.Color.green(),
+                )
+            )
+
+        match_refreshed = await db.get_match_by_channel(match["channel_id"])
+        if match_refreshed:
+            await refresh_hub_card(interaction.client, match_refreshed)
+
+        if not interaction.response.is_done():
+            await interaction.response.send_message("Roster unlocked.", ephemeral=True)
+        else:
+            await interaction.followup.send("Roster unlocked.", ephemeral=True)
+
     # ── roster embed builder ──────────────────────────────────────────────────
 
     def _build_roster_embed(
@@ -245,59 +404,7 @@ class MatchCog(commands.Cog):
             )
             return
 
-        guild = ctx.guild
-        channel = ctx.channel
-
-        await db.update_match_status(match["id"], "open")
-        await db.reopen_match_registrations(match["id"])
-
-        # Re-attach the Register button before restoring permissions so it's
-        # visible the moment players regain channel access.
-        roster_msg_id = match.get("roster_message_id")
-        if roster_msg_id:
-            try:
-                roster_msg = await channel.fetch_message(roster_msg_id)
-                view = RegisterMatchView(channel.id)
-                await roster_msg.edit(view=view)
-                self.bot.add_view(view)
-            except (discord.NotFound, discord.Forbidden):
-                pass
-
-        # Restore open-state channel permissions (mirrors _wizard_confirmed).
-        overwrites = {
-            guild.default_role: discord.PermissionOverwrite(
-                read_messages=True,
-                send_messages=True,
-                use_application_commands=False,
-            ),
-            guild.me: discord.PermissionOverwrite(
-                read_messages=True,
-                send_messages=True,
-                manage_messages=True,
-                use_application_commands=True,
-            ),
-            ctx.author: discord.PermissionOverwrite(
-                use_application_commands=True,
-            ),
-        }
-        for role in guild.roles:
-            if role.name in config.ADMIN_ROLES:
-                overwrites[role] = discord.PermissionOverwrite(
-                    use_application_commands=True,
-                )
-        await channel.edit(overwrites=overwrites)
-
-        await channel.send(
-            embed=discord.Embed(
-                title="🔓  Roster Unlocked",
-                description=(
-                    "Registration is open again.\n"
-                    "Players can register using the button above."
-                ),
-                color=discord.Color.green(),
-            )
-        )
-        await ctx.followup.send("Roster unlocked.", ephemeral=True)
+        await self.do_unlock_roster(ctx.interaction, match)
 
     # ── /startgame ────────────────────────────────────────────────────────────
 
@@ -326,31 +433,7 @@ class MatchCog(commands.Cog):
             await ctx.followup.send("Game code must be exactly **8 digits**.", ephemeral=True)
             return
 
-        guild = ctx.guild
-        channel = ctx.channel
-        leader = guild.get_member(match["leader_id"])
-        leader_name = (leader.display_name if leader else str(match["leader_id"]))
-        safe_leader = leader_name.lower().replace(" ", "-").replace(".", "")
-        safe_code = code.lower().replace(" ", "-")
-        new_name = f"{safe_code}-{safe_leader}"
-
-        scale = config.GAME_TYPE_SCALE.get(match["game_type"], "1X")
-        active_category_name = config.SCALE_CATEGORIES.get(scale, f"{scale} GAMES")
-        active_category = discord.utils.get(guild.categories, name=active_category_name)
-        if not active_category:
-            active_category = await guild.create_category(active_category_name)
-
-        await db.set_game_code(match["id"], code)
-        await channel.edit(name=new_name, category=active_category)
-        msg = await channel.send(
-            embed=discord.Embed(
-                title="🎮  Game Found!",
-                description=f"**Game Code:** `{code}`\n\nGood luck everyone!",
-                color=discord.Color.green(),
-            )
-        )
-        await msg.pin()
-        await ctx.followup.send("Game started!", ephemeral=True)
+        await self.do_start_game(ctx.interaction, match, code)
 
     # ── /endgame ──────────────────────────────────────────────────────────────
 
@@ -381,33 +464,7 @@ class MatchCog(commands.Cog):
             )
             return
 
-        if result == "Won":
-            archive_name = config.VICTORY_CATEGORY
-            new_status   = "won"
-            embed = discord.Embed(
-                title="🏆  Victory!",
-                description="This game has been won. Well played!",
-                color=discord.Color.gold(),
-            )
-        else:
-            archive_name = config.LOSS_CATEGORY
-            new_status   = "lost"
-            embed = discord.Embed(
-                title="💀  Defeat",
-                description="This game has been lost. Better luck next time.",
-                color=discord.Color.dark_red(),
-            )
-
-        archive_category = discord.utils.get(ctx.guild.categories, name=archive_name)
-        if not archive_category:
-            archive_category = await ctx.guild.create_category(archive_name)
-
-        await db.update_match_status(match["id"], new_status)
-        await ctx.channel.edit(category=archive_category)
-        await ctx.channel.send(embed=embed)
-        await ctx.followup.send(
-            f"Game declared as **{result}**. Channel moved to **{archive_name}**.", ephemeral=True
-        )
+        await self.do_end_game(ctx.interaction, match, result)
 
     # ── /cancelgame ───────────────────────────────────────────────────────────
 
@@ -440,7 +497,7 @@ class MatchCog(commands.Cog):
 
         await ctx.followup.send(
             "Cancel this game and **delete the channel**?",
-            view=_CancelConfirmView(match),
+            view=_CancelConfirmView(match, ctx.interaction.client),
             ephemeral=True,
         )
 
@@ -480,6 +537,10 @@ class MatchCog(commands.Cog):
         await db.withdraw_registration(reg["id"])
         await ctx.followup.send("You've withdrawn from this match.", ephemeral=True)
         await _update_roster_embed(match, ctx.channel)
+
+        match_refreshed = await db.get_match_by_channel(ctx.channel_id)
+        if match_refreshed:
+            await refresh_hub_card(self.bot, match_refreshed)
 
     # ── /help ─────────────────────────────────────────────────────────────────
 
@@ -533,9 +594,10 @@ class MatchCog(commands.Cog):
 # ── cancel-match confirm view ─────────────────────────────────────────────────
 
 class _CancelConfirmView(discord.ui.View):
-    def __init__(self, match: dict):
+    def __init__(self, match: dict, bot: discord.Bot | None = None):
         super().__init__(timeout=60)
         self.match = match
+        self._bot  = bot
 
     @discord.ui.button(label="Yes, Cancel Match", style=discord.ButtonStyle.danger)
     async def confirm(self, button: discord.ui.Button, interaction: discord.Interaction) -> None:
@@ -545,6 +607,12 @@ class _CancelConfirmView(discord.ui.View):
             "Match cancelled. Channel deletes in 5 seconds…", ephemeral=True
         )
         self.stop()
+
+        bot = self._bot or interaction.client
+        match_refreshed = await db.get_match_by_channel(self.match["channel_id"])
+        if match_refreshed:
+            await refresh_hub_card(bot, match_refreshed)
+
         await asyncio.sleep(5)
         await channel.delete(reason="Match cancelled by leader/admin")
 

@@ -7,6 +7,7 @@ import discord
 import config
 import database as db
 from data.game_data import get_countries, get_all_countries, find_country, find_country_in_region
+from hub_utils import refresh_hub_card
 
 # Ephemeral state keyed by user_id while they fill in the country modal
 _pending: dict[int, dict] = {}
@@ -435,6 +436,10 @@ class _CountrySelectView(discord.ui.View):
             msg = await interaction.followup.send(embed=card_embed, view=card_view)
             await db.update_registration_message(reg_id, msg.id)
             await _update_roster_embed(self.match, interaction.channel)
+
+            match_refreshed = await db.get_match_by_channel(self.match["channel_id"])
+            if match_refreshed:
+                await refresh_hub_card(interaction.client, match_refreshed)
         except Exception:
             if not interaction.response.is_done():
                 await interaction.response.send_message(
@@ -569,6 +574,7 @@ class _CountryModal(discord.ui.Modal):
             match = await db.get_match_by_channel(interaction.channel_id)
             if match and interaction.channel:
                 await _update_roster_embed(match, interaction.channel)
+                await refresh_hub_card(interaction.client, match)
         except Exception:
             if not interaction.response.is_done():
                 await interaction.response.send_message(
@@ -669,6 +675,7 @@ class _WithdrawButton(discord.ui.Button):
 
             if match:
                 await _update_roster_embed(match, interaction.channel)
+                await refresh_hub_card(interaction.client, match)
         except Exception:
             if not interaction.response.is_done():
                 await interaction.response.send_message(

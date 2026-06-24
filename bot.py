@@ -3,6 +3,7 @@ import discord
 import config
 import database as db
 from views.register_view import RegisterMatchView, RegistrationCardView
+from views.hub_view import MatchHubControlView, MatchCardView
 
 
 class CommandPost(discord.Bot):
@@ -23,7 +24,8 @@ class CommandPost(discord.Bot):
         print("[commandpost] Loading cogs...", flush=True)
         try:
             self.load_extension("cogs.match")
-            print("[commandpost] Cog loaded OK.", flush=True)
+            self.load_extension("cogs.hub")
+            print("[commandpost] Cogs loaded OK.", flush=True)
         except Exception as e:
             import traceback
             print(f"[commandpost] ERROR loading cog: {e}", flush=True)
@@ -32,6 +34,15 @@ class CommandPost(discord.Bot):
 
         print("[commandpost] Restoring persistent views...", flush=True)
         await self._restore_views()
+
+        print("[commandpost] Setting up match-hub...", flush=True)
+        guild = self.get_guild(config.GUILD_ID)
+        if guild:
+            hub_cog = self.cogs.get("HubCog")
+            if hub_cog:
+                await hub_cog.setup_hub(guild)
+        else:
+            print("[commandpost] WARNING: guild not found — hub setup skipped.", flush=True)
 
         print(f"[commandpost] Pending commands: {len(self.pending_application_commands)}", flush=True)
         print("[commandpost] Syncing commands...", flush=True)
@@ -48,15 +59,21 @@ class CommandPost(discord.Bot):
         all_matches = await db.get_non_cancelled_matches()
         for match in all_matches:
             self.add_view(RegisterMatchView(match["channel_id"]))
+            if match["status"] not in ("won", "lost"):
+                self.add_view(MatchCardView(match["channel_id"]))
 
         active_regs = await db.get_all_active_registrations()
         for reg in active_regs:
             self.add_view(RegistrationCardView(reg["id"]))
 
+        # Hub control panel (Create Match button) — one global view
+        self.add_view(MatchHubControlView())
+
         open_count = sum(1 for m in all_matches if m["status"] == "open")
         print(
             f"[commandpost] Restored {len(all_matches)} match view(s) "
-            f"({open_count} open) and {len(active_regs)} registration card view(s).",
+            f"({open_count} open), {len(active_regs)} registration card view(s), "
+            f"and hub control panel.",
             flush=True,
         )
 
