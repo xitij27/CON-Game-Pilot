@@ -18,6 +18,7 @@ _ROMAN: dict[str, int] = {
     "I": 1, "II": 2, "III": 3, "IV": 4, "V": 5,
     "VI": 6, "VII": 7, "VIII": 8, "IX": 9, "X": 10,
 }
+_INT_TO_ROMAN: dict[int, str] = {v: k for k, v in _ROMAN.items()}
 
 
 def _find_latest_category(guild: discord.Guild, base_name: str) -> discord.CategoryChannel | None:
@@ -38,6 +39,21 @@ def _find_latest_category(guild: discord.Guild, base_name: str) -> discord.Categ
         return _ROMAN.get(suffix.upper(), cat.position)
 
     return max(matches, key=_rank)
+
+
+async def _get_archive_category(
+    guild: discord.Guild, base_name: str
+) -> discord.CategoryChannel:
+    """Return an archive category with room (<50 channels), creating the next Roman-numeral one if the latest is full."""
+    latest = _find_latest_category(guild, base_name)
+    if not latest:
+        return await guild.create_category(base_name)
+    if len(latest.channels) < 50:
+        return latest
+    suffix = latest.name[len(base_name):].strip()
+    current_num = _ROMAN.get(suffix.upper(), 1) if suffix else 1
+    next_suffix = _INT_TO_ROMAN.get(current_num + 1, str(current_num + 1))
+    return await guild.create_category(f"{base_name} {next_suffix}")
 
 
 class MatchCog(commands.Cog):
@@ -282,9 +298,7 @@ class MatchCog(commands.Cog):
                 color=discord.Color.dark_red(),
             )
 
-        archive_category = _find_latest_category(interaction.guild, archive_name)
-        if not archive_category:
-            archive_category = await interaction.guild.create_category(archive_name)
+        archive_category = await _get_archive_category(interaction.guild, archive_name)
 
         await db.update_match_status(match["id"], new_status)
         channel = interaction.guild.get_channel(match["channel_id"])
