@@ -20,32 +20,20 @@ class HubCog(commands.Cog):
         """Called from bot.setup_hook after DB init. Creates the hub channel and restores views."""
         hub_channel = await ensure_hub_channel(guild)
 
-        # Restore or (re)post the control panel
-        stored_id = await db.get_setting(_CONTROL_PANEL_KEY)
-        control_msg = None
-        if stored_id:
-            try:
-                control_msg = await hub_channel.fetch_message(int(stored_id))
-            except (discord.NotFound, discord.Forbidden):
-                control_msg = None
-
+        # Always post a fresh control panel on every startup
         control_view = MatchHubControlView()
-        if control_msg is None:
-            embed = discord.Embed(
-                title="🗺️  Match Hub",
-                description=(
-                    "Welcome to the Match Hub!\n\n"
-                    "Use **Create Match** to open a new map match.\n"
-                    "Active matches appear below — click **Register** to join one."
-                ),
-                color=discord.Color.blurple(),
-            )
-            control_msg = await hub_channel.send(embed=embed, view=control_view)
-            await control_msg.pin()
-            await db.set_setting(_CONTROL_PANEL_KEY, str(control_msg.id))
-        else:
-            await control_msg.edit(view=control_view)
-
+        embed = discord.Embed(
+            title="🗺️  Match Hub",
+            description=(
+                "Welcome to the Match Hub!\n\n"
+                "Use **Create Match** to open a new map match.\n"
+                "Active matches appear below — click **Register** to join one."
+            ),
+            color=discord.Color.blurple(),
+        )
+        control_msg = await hub_channel.send(embed=embed, view=control_view)
+        await control_msg.pin()
+        await db.set_setting(_CONTROL_PANEL_KEY, str(control_msg.id))
         self.bot.add_view(control_view)
 
         # Restore per-match card views for all non-terminal matches

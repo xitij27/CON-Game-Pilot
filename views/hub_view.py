@@ -289,13 +289,6 @@ class _CancelConfirmView(discord.ui.View):
 
     @discord.ui.button(label="Yes, Cancel Match", style=discord.ButtonStyle.danger)
     async def confirm(self, button: discord.ui.Button, interaction: discord.Interaction) -> None:
-        await db.update_match_status(self.match["id"], "cancelled")
-        channel = interaction.guild.get_channel(self.match["channel_id"])
-
-        match_refreshed = await db.get_match_by_channel(self.match["channel_id"])
-        if match_refreshed:
-            await refresh_hub_card(interaction.client, match_refreshed)
-
         await interaction.response.edit_message(
             embed=discord.Embed(
                 title="Match cancelled.",
@@ -305,9 +298,15 @@ class _CancelConfirmView(discord.ui.View):
             view=None,
         )
         self.stop()
-        await asyncio.sleep(5)
-        if channel:
-            await channel.delete(reason="Match cancelled via hub panel")
+        cog = interaction.client.cogs.get("MatchCog")
+        if cog:
+            await cog.do_cancel_match(self.match, interaction.guild)
+        else:
+            await db.update_match_status(self.match["id"], "cancelled")
+            channel = interaction.guild.get_channel(self.match["channel_id"])
+            await asyncio.sleep(5)
+            if channel:
+                await channel.delete(reason="Match cancelled via hub panel")
 
     @discord.ui.button(label="Keep Match", style=discord.ButtonStyle.secondary)
     async def keep(self, button: discord.ui.Button, interaction: discord.Interaction) -> None:

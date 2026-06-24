@@ -51,6 +51,9 @@ async def init_db() -> None:
         if "hub_message_id" not in cols:
             await db.execute("ALTER TABLE matches ADD COLUMN hub_message_id INTEGER")
             await db.commit()
+        if "event_id" not in cols:
+            await db.execute("ALTER TABLE matches ADD COLUMN event_id INTEGER")
+            await db.commit()
 
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute("""
@@ -262,6 +265,15 @@ async def get_squad_role_counts(match_id: int) -> dict[str, int]:
     for r in regs:
         counts[r["squad_role"]] = counts.get(r["squad_role"], 0) + 1
     return counts
+
+
+async def set_event_id(match_id: int, event_id: int) -> None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE matches SET event_id = ? WHERE id = ?",
+            (event_id, match_id),
+        )
+        await db.commit()
 
 
 async def set_hub_message_id(match_id: int, message_id: int) -> None:

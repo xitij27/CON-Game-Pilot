@@ -69,8 +69,14 @@ class MatchCog(commands.Cog):
         if not category:
             category = await guild.create_category(config.PREGAME_CATEGORY)
 
+        safe_leader = (
+            interaction.user.display_name
+            .lower()
+            .replace(" ", "-")
+            .replace(".", "")
+        )
         safe_name = (
-            f"{wizard.game_type}-{wizard.region}"
+            f"{wizard.game_type}-{wizard.region}-{safe_leader}"
             .lower()
             .replace(" ", "-")
             .replace(".", "")
@@ -133,13 +139,14 @@ class MatchCog(commands.Cog):
             f"{country_lines}"
         )
         try:
-            await guild.create_scheduled_event(
+            event = await guild.create_scheduled_event(
                 name=f"{wizard.game_type} — {wizard.region}",
                 description=event_description,
                 start_time=wizard.start_time,
                 end_time=wizard.end_time,
                 location=channel.name,
             )
+            await db.set_event_id(match_id, event.id)
         except discord.HTTPException:
             pass
 
@@ -181,6 +188,27 @@ class MatchCog(commands.Cog):
                 await db.set_hub_message_id(match_id, hub_msg.id)
 
     # ── shared action helpers (called by both slash commands and hub buttons) ──
+
+    async def do_cancel_match(self, match: dict, guild: discord.Guild) -> None:
+        """Cancel a match: update DB, delete the Discord event, refresh hub, delete channel."""
+        await db.update_match_status(match["id"], "cancelled")
+
+        event_id = match.get("event_id")
+        if event_id:
+            try:
+                event = await guild.fetch_scheduled_event(event_id)
+                await event.delete()
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                pass
+
+        match_refreshed = await db.get_match_by_channel(match["channel_id"])
+        if match_refreshed:
+            await refresh_hub_card(self.bot, match_refreshed)
+
+        channel = guild.get_channel(match["channel_id"])
+        if channel:
+            await asyncio.sleep(5)
+            await channel.delete(reason="Match cancelled by leader/admin")
 
     async def do_start_game(
         self, interaction: discord.Interaction, match: dict, code: str
@@ -601,20 +629,17 @@ class _CancelConfirmView(discord.ui.View):
 
     @discord.ui.button(label="Yes, Cancel Match", style=discord.ButtonStyle.danger)
     async def confirm(self, button: discord.ui.Button, interaction: discord.Interaction) -> None:
-        await db.update_match_status(self.match["id"], "cancelled")
-        channel = interaction.channel
         await interaction.response.send_message(
             "Match cancelled. Channel deletes in 5 seconds…", ephemeral=True
         )
         self.stop()
-
-        bot = self._bot or interaction.client
-        match_refreshed = await db.get_match_by_channel(self.match["channel_id"])
-        if match_refreshed:
-            await refresh_hub_card(bot, match_refreshed)
-
-        await asyncio.sleep(5)
-        await channel.delete(reason="Match cancelled by leader/admin")
+        cog = interaction.client.cogs.get("MatchCog")
+        if cog:
+            await cog.do_cancel_match(self.match, interaction.guild)
+        else:
+            await db.update_match_status(self.match["id"], "cancelled")
+            await asyncio.sleep(5)
+            await interaction.channel.delete(reason="Match cancelled by leader/admin")
 
     @discord.ui.button(label="Keep Match", style=discord.ButtonStyle.secondary)
     async def keep(self, button: discord.ui.Button, interaction: discord.Interaction) -> None:
