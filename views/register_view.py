@@ -539,6 +539,7 @@ class _EditScheduleView(discord.ui.View):
         )
 
     async def _on_confirm(self, interaction: discord.Interaction) -> None:
+        # All validation is synchronous — do it before any response call
         local_start = datetime.fromisoformat(self._date).replace(
             hour=self._hour, minute=self._minute, second=0, microsecond=0
         )
@@ -564,10 +565,13 @@ class _EditScheduleView(discord.ui.View):
             )
             return
 
+        # Defer BEFORE the slow Discord API calls (fetch + edit can exceed 3 s)
+        await interaction.response.defer(ephemeral=True)
+
         try:
             event = await interaction.guild.fetch_scheduled_event(event_id)
             await event.edit(start_time=start_utc, end_time=end_utc)
-            await interaction.response.edit_message(
+            await interaction.edit_original_response(
                 embed=discord.Embed(
                     title="✅  Schedule Updated",
                     description=(
@@ -579,7 +583,7 @@ class _EditScheduleView(discord.ui.View):
                 view=None,
             )
         except discord.NotFound:
-            await interaction.response.edit_message(
+            await interaction.edit_original_response(
                 embed=discord.Embed(
                     title="⚠️  Event Not Found",
                     description="The Discord event appears to have been deleted.",
@@ -588,10 +592,9 @@ class _EditScheduleView(discord.ui.View):
                 view=None,
             )
         except discord.HTTPException:
-            if not interaction.response.is_done():
-                await interaction.response.send_message(
-                    "Failed to update the Discord event. Please try again.", ephemeral=True
-                )
+            await interaction.followup.send(
+                "Failed to update the Discord event. Please try again.", ephemeral=True
+            )
 
 
 # ── View Registrations button ─────────────────────────────────────────────────
