@@ -6,7 +6,6 @@ import discord
 
 import config
 import database as db
-from hub_utils import refresh_hub_card
 from views.register_view import _RegisterButton
 from views.roster_view import RosterPanel
 

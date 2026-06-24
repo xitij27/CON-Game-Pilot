@@ -10,7 +10,6 @@ from data.game_data import get_countries
 from views.setup_views import SetupWizard
 from views.register_view import MatchChannelView, RegisterMatchView, _update_roster_embed, update_channel_panel
 from views.roster_view import RosterPanel
-from hub_utils import refresh_hub_card, build_match_card_embed
 
 DOCTRINE_EMOJI = {"Western": "🟦", "Eastern": "🟥", "European": "🟨"}
 
@@ -174,15 +173,6 @@ class MatchCog(commands.Cog):
             view=None,
         )
 
-        # Post a match card to the hub channel
-        import config as _cfg
-        hub_channel = discord.utils.get(guild.text_channels, name=_cfg.MATCH_HUB_CHANNEL)
-        if hub_channel:
-            match_row = await db.get_match_by_channel(channel.id)
-            if match_row:
-                hub_embed = await build_match_card_embed(match_row, guild)
-                hub_msg   = await hub_channel.send(embed=hub_embed)
-                await db.set_hub_message_id(match_id, hub_msg.id)
 
     # ── shared action helpers (called by both slash commands and hub buttons) ──
 
@@ -197,10 +187,6 @@ class MatchCog(commands.Cog):
                 await event.delete()
             except (discord.NotFound, discord.Forbidden, discord.HTTPException):
                 pass
-
-        match_refreshed = await db.get_match_by_channel(match["channel_id"])
-        if match_refreshed:
-            await refresh_hub_card(self.bot, match_refreshed)
 
         channel = guild.get_channel(match["channel_id"])
         if channel:
@@ -236,10 +222,9 @@ class MatchCog(commands.Cog):
             )
             await msg.pin()
 
-        match_refreshed = await db.get_match_by_channel(match["channel_id"])
-        if match_refreshed:
-            await refresh_hub_card(interaction.client, match_refreshed)
-            if channel:
+        if channel:
+            match_refreshed = await db.get_match_by_channel(match["channel_id"])
+            if match_refreshed:
                 await update_channel_panel(match_refreshed, channel, interaction.client, "started")
 
         if not interaction.response.is_done():
@@ -277,10 +262,6 @@ class MatchCog(commands.Cog):
         if channel:
             await channel.edit(category=archive_category)
             await channel.send(embed=embed)
-
-        match_refreshed = await db.get_match_by_channel(match["channel_id"])
-        if match_refreshed:
-            await refresh_hub_card(interaction.client, match_refreshed)
 
         result_text = f"Game declared as **{result}**. Channel moved to **{archive_name}**."
         if not interaction.response.is_done():
@@ -323,10 +304,6 @@ class MatchCog(commands.Cog):
                     color=discord.Color.green(),
                 )
             )
-
-        match_refreshed = await db.get_match_by_channel(match["channel_id"])
-        if match_refreshed:
-            await refresh_hub_card(interaction.client, match_refreshed)
 
         if not interaction.response.is_done():
             await interaction.response.send_message("Roster unlocked.", ephemeral=True)
@@ -556,10 +533,6 @@ class MatchCog(commands.Cog):
         await db.withdraw_registration(reg["id"])
         await ctx.followup.send("You've withdrawn from this match.", ephemeral=True)
         await _update_roster_embed(match, ctx.channel)
-
-        match_refreshed = await db.get_match_by_channel(ctx.channel_id)
-        if match_refreshed:
-            await refresh_hub_card(self.bot, match_refreshed)
 
     # ── /help ─────────────────────────────────────────────────────────────────
 
