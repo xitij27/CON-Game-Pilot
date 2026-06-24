@@ -1,7 +1,7 @@
 import aiosqlite
 from typing import Optional
 
-DB_PATH = "commandpost.db"
+DB_PATH = "con-game-pilot.db"
 
 
 async def init_db() -> None:

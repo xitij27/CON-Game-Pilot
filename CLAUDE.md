@@ -1,4 +1,4 @@
-# CommandPost — Codebase Guide
+# CON Game Pilot — Codebase Guide
 
 ## What this is
 
@@ -12,14 +12,14 @@ pip install -r requirements.txt
 python bot.py
 ```
 
-Environment variables (`DISCORD_BOT_TOKEN`, `SERVER_ID`) are loaded from `.env` via python-dotenv. The SQLite database (`commandpost.db`) is created automatically on first boot.
+Environment variables (`DISCORD_BOT_TOKEN`, `SERVER_ID`) are loaded from `.env` via python-dotenv. The SQLite database (`con-game-pilot.db`) is created automatically on first boot.
 
 ---
 
 ## File map
 
 ```
-bot.py                  Entry point. Defines CommandPost, restores persistent views on startup.
+bot.py                  Entry point. Defines CONGamePilot, restores persistent views on startup.
 config.py               All tuneable constants: rank names, admin roles, category names, role limits.
 database.py             Every DB read/write. All functions are async (aiosqlite). No ORM.
 data/

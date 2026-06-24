@@ -632,11 +632,11 @@ class MatchCog(commands.Cog):
 
     @discord.slash_command(
         name="help",
-        description="Show how to use CommandPost",
+        description="Show how to use CON Game Pilot",
     )
     async def help(self, ctx: discord.ApplicationContext) -> None:
         embed = discord.Embed(
-            title="📖  How to Use CommandPost",
+            title="📖  How to Use CON Game Pilot",
             color=discord.Color.blurple(),
         )
 
@@ -700,7 +700,7 @@ class MatchCog(commands.Cog):
             ),
             inline=False,
         )
-        embed.set_footer(text="CommandPost • Map Match Manager")
+        embed.set_footer(text="CON Game Pilot • Map Match Manager")
         await ctx.respond(embed=embed, ephemeral=True)
 
 

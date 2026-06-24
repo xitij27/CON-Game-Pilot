@@ -6,7 +6,7 @@ from views.register_view import MatchChannelView, RegistrationCardView
 from views.hub_view import MatchHubControlView
 
 
-class CommandPost(discord.Bot):
+class CONGamePilot(discord.Bot):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self._initialized = False  # guard against on_ready firing multiple times
@@ -16,41 +16,41 @@ class CommandPost(discord.Bot):
             return
         self._initialized = True
 
-        print(f"[commandpost] Logged in as {self.user}  (id: {self.user.id})", flush=True)
+        print(f"[con-game-pilot] Logged in as {self.user}  (id: {self.user.id})", flush=True)
 
-        print("[commandpost] Initialising DB...", flush=True)
+        print("[con-game-pilot] Initialising DB...", flush=True)
         await db.init_db()
 
-        print("[commandpost] Loading cogs...", flush=True)
+        print("[con-game-pilot] Loading cogs...", flush=True)
         try:
             self.load_extension("cogs.match")
             self.load_extension("cogs.hub")
-            print("[commandpost] Cogs loaded OK.", flush=True)
+            print("[con-game-pilot] Cogs loaded OK.", flush=True)
         except Exception as e:
             import traceback
-            print(f"[commandpost] ERROR loading cog: {e}", flush=True)
+            print(f"[con-game-pilot] ERROR loading cog: {e}", flush=True)
             traceback.print_exc()
             return
 
-        print("[commandpost] Restoring persistent views...", flush=True)
+        print("[con-game-pilot] Restoring persistent views...", flush=True)
         await self._restore_views()
 
-        print("[commandpost] Setting up match-hub...", flush=True)
+        print("[con-game-pilot] Setting up match-hub...", flush=True)
         guild = self.get_guild(config.GUILD_ID)
         if guild:
             hub_cog = self.cogs.get("HubCog")
             if hub_cog:
                 await hub_cog.setup_hub(guild)
         else:
-            print("[commandpost] WARNING: guild not found — hub setup skipped.", flush=True)
+            print("[con-game-pilot] WARNING: guild not found — hub setup skipped.", flush=True)
 
-        print(f"[commandpost] Pending commands: {len(self.pending_application_commands)}", flush=True)
-        print("[commandpost] Syncing commands...", flush=True)
+        print(f"[con-game-pilot] Pending commands: {len(self.pending_application_commands)}", flush=True)
+        print("[con-game-pilot] Syncing commands...", flush=True)
         try:
             await self.sync_commands()
-            print("[commandpost] Commands synced.", flush=True)
+            print("[con-game-pilot] Commands synced.", flush=True)
         except Exception as e:
-            print(f"[commandpost] ERROR syncing commands: {e}", flush=True)
+            print(f"[con-game-pilot] ERROR syncing commands: {e}", flush=True)
 
     async def _restore_views(self) -> None:
         # Register views for every non-cancelled match so that clicking the
@@ -70,7 +70,7 @@ class CommandPost(discord.Bot):
 
         open_count = sum(1 for m in all_matches if m["status"] == "open")
         print(
-            f"[commandpost] Restored {len(all_matches)} match view(s) "
+            f"[con-game-pilot] Restored {len(all_matches)} match view(s) "
             f"({open_count} open), {len(active_regs)} registration card view(s), "
             f"and hub control panel.",
             flush=True,
@@ -86,7 +86,7 @@ def main() -> None:
     intents = discord.Intents.default()
     intents.members = True
 
-    bot = CommandPost(intents=intents, debug_guilds=[config.GUILD_ID])
+    bot = CONGamePilot(intents=intents, debug_guilds=[config.GUILD_ID])
     bot.run(config.DISCORD_TOKEN)
 
 

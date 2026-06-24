@@ -62,9 +62,8 @@ GAME_TYPE_SCALE: dict[str, str] = {
 
 NEW_MAP_CHANNEL: str = "new-map-chat"
 
-# Hub channel — central panel (set in .env to override defaults)
-GAME_CENTRE_CATEGORY: str = os.getenv("GAME_CENTRE_CATEGORY", "game centre")
-MATCH_HUB_CHANNEL: str    = os.getenv("MATCH_HUB_CHANNEL", "match-hub")
+CATEGORY_NAME: str = "Game Centre"
+MATCH_HUB_CHANNEL: str    = "match-hub"
 
 MILITARY_ROLES: list[str] = [
     "Ground Support",

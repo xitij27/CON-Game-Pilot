@@ -8,9 +8,9 @@ import config
 
 async def ensure_hub_channel(guild: discord.Guild) -> discord.TextChannel:
     """Return (creating if needed) the match-hub channel in the game centre category."""
-    category = discord.utils.get(guild.categories, name=config.GAME_CENTRE_CATEGORY)
+    category = discord.utils.get(guild.categories, name=config.CATEGORY_NAME)
     if not category:
-        category = await guild.create_category(config.GAME_CENTRE_CATEGORY)
+        category = await guild.create_category(config.CATEGORY_NAME)
 
     channel = discord.utils.get(guild.text_channels, name=config.MATCH_HUB_CHANNEL)
     if not channel:

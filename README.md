@@ -1,4 +1,4 @@
-# CommandPost
+# CON Game Pilot
 
 A Discord bot for managing competitive Conflict of Nations World War III games. Players with Corporal+ rank create matches through a central **Match Hub** channel, others register with a single button click, and the Map Leader locks a final roster — automatically making the channel private for selected players only.
 
@@ -54,10 +54,6 @@ Fill in `.env`:
 ```env
 DISCORD_BOT_TOKEN=your_token_here
 SERVER_ID=your_guild_id_here
-
-# Hub channel (optional — these are the defaults)
-GAME_CENTRE_CATEGORY=game centre
-MATCH_HUB_CHANNEL=match-hub
 ```
 
 To get your Server ID: Discord **Settings → Advanced → enable Developer Mode**, then right-click your server icon → **Copy Server ID**.
@@ -70,25 +66,25 @@ python bot.py
 ```
 
 On first boot the bot will:
-- Create the database (`commandpost.db`)
+- Create the database (`con-game-pilot.db`)
 - Create the `game centre` category and `#match-hub` channel if they don't exist
 - Post a fresh control panel in `#match-hub` and pin it
 
 ## Configuration
 
-Settings in `config.py` (roles, categories) and `.env` (tokens, channel names):
+Settings in `config.py` (roles, categories, channel names) and `.env` (tokens):
 
 | Setting | Where | Description |
 |---|---|---|
 | `DISCORD_BOT_TOKEN` | `.env` | Bot token from the Developer Portal |
 | `SERVER_ID` | `.env` | Guild (server) ID |
-| `GAME_CENTRE_CATEGORY` | `.env` | Category that contains the hub channel (default: `game centre`) |
-| `MATCH_HUB_CHANNEL` | `.env` | Hub channel name (default: `match-hub`) |
 | `ALLOWED_RANKS` | `config.py` | Role names that can create matches (Corporal and above) |
 | `ADMIN_ROLES` | `config.py` | Roles that always keep channel access and can override leader actions |
 | `PREGAME_CATEGORY` | `config.py` | Category where new match channels are created (default: `PREGAME`) |
 | `VICTORY_CATEGORY` | `config.py` | Category channels move to after a win (default: `VICTORY WALL`) |
 | `LOSS_CATEGORY` | `config.py` | Category channels move to after a loss (default: `LOSS LOG`) |
+| `CATEGORY_NAME` | `config.py` | Category that contains the hub channel (default: `Game Centre`) |
+| `MATCH_HUB_CHANNEL` | `config.py` | Hub channel name (default: `match-hub`) |
 | `NEW_MAP_CHANNEL` | `config.py` | Channel for match announcements; skipped silently if absent |
 | `MILITARY_ROLES` | `config.py` | One per player per match; list order = display order |
 | `SQUAD_ROLE_LIMITS` | `config.py` | Per-role caps; `None` = unlimited |
