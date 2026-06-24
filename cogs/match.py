@@ -81,7 +81,7 @@ class MatchCog(commands.Cog):
             .replace(".", "")
         )
         # Build permission overwrites: everyone can read/write but only the
-        # leader (and admin roles) can use slash commands in this channel.
+        # leader (and admin roles) can use application commands in this channel.
         overwrites = {
             guild.default_role: discord.PermissionOverwrite(
                 read_messages=True,
@@ -455,7 +455,7 @@ class MatchCog(commands.Cog):
         if match["status"] != "started":
             await ctx.followup.send(
                 "The game must be in progress before declaring an outcome. "
-                "Use `/startgame` first.",
+                "Use the **Start Game** button in the match channel first.",
                 ephemeral=True,
             )
             return
@@ -481,7 +481,7 @@ class MatchCog(commands.Cog):
 
         if match["status"] == "started":
             await ctx.followup.send(
-                "The game is already in progress — use `/endgame` to declare the outcome instead.",
+                "The game is already in progress — use the **End Game** option in the match channel instead.",
                 ephemeral=True,
             )
             return
@@ -538,44 +538,63 @@ class MatchCog(commands.Cog):
 
     @discord.slash_command(
         name="help",
-        description="Show all available CommandPost commands",
+        description="Show how to use CommandPost",
     )
     async def help(self, ctx: discord.ApplicationContext) -> None:
         embed = discord.Embed(
-            title="📖  CommandPost Commands",
+            title="📖  How to Use CommandPost",
             color=discord.Color.blurple(),
         )
 
         embed.add_field(
-            name="🌐  Anyone",
+            name="🗺️  Creating a Match",
             value=(
-                "`/creategame` — Launch the match setup wizard and open registration\n"
-                "`/withdraw` — Withdraw your registration from the current match\n"
-                "📋 **Register** — Click the Register button in the match channel to join"
+                f"Go to **#match-hub** and click **🗺️ Create Match** (requires **{config.ALLOWED_RANKS[0]}** rank or above).\n"
+                "A setup wizard will guide you through game type, region, and start time."
             ),
             inline=False,
         )
         embed.add_field(
-            name="🗺️  Map Leader & Admins",
+            name="📋  Registering",
             value=(
-                "`/roster` — Open the roster panel to select players and lock the roster\n"
-                "`/startgame <code>` — Enter the 8-digit lobby code; moves channel to active category\n"
-                "`/endgame <Won|Lost>` — Declare the outcome; moves channel to Victory Wall or Loss Log\n"
-                "`/cancelgame` — Cancel the game and delete the channel *(pre-start only)*"
+                "Inside the match channel, click **📋 Register** on the pinned message.\n"
+                "Pick your Squad Role, Military Role, and country, then confirm.\n"
+                "Use the **🚪 Withdraw** button on your registration card to opt out."
             ),
             inline=False,
         )
         embed.add_field(
-            name="🔓  Map Leader only",
-            value="`/unlockroster` — Reopen registration after a roster lock; resets all selections",
+            name="🔒  Locking the Roster  *(Map Leader / Admin)*",
+            value=(
+                "Click **🔒 Lock Roster** → select which players to keep → confirm.\n"
+                "The channel becomes private to selected players only.\n"
+                "Click **🔓 Unlock Roster** to reopen registration if needed."
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="🎮  Starting the Game  *(Map Leader / Admin)*",
+            value=(
+                "After locking, click **🎮 Start Game** and enter the 8-digit lobby code.\n"
+                "The channel is renamed to the code and moved to the active games category."
+            ),
+            inline=False,
+        )
+        embed.add_field(
+            name="📅  Editing the Schedule  *(Map Leader / Admin)*",
+            value="Click **📅 Edit Schedule** on the pinned message to update the Discord event's start time.",
+            inline=False,
+        )
+        embed.add_field(
+            name="❌  Cancelling  *(Map Leader only)*",
+            value="Click **❌ Cancel Match** on the pinned message. The channel and Discord event are deleted after 5 seconds.",
             inline=False,
         )
         embed.add_field(
             name="ℹ️  Notes",
             value=(
-                f"• `/creategame` requires **{config.ALLOWED_RANKS[0]}** rank or above\n"
-                "• Leader and Admin roles always keep channel access after roster lock\n"
-                "• Spy squad role allows picking any country across the full game map"
+                "• Spy squad role allows picking any country across the full game map\n"
+                "• Leader and Admin roles always keep channel access after roster lock"
             ),
             inline=False,
         )

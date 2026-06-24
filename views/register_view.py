@@ -1,12 +1,14 @@
 """Registration flow: persistent Register button → role selects → country modal → card."""
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 import discord
 
 import config
 import database as db
 from data.game_data import get_countries, get_all_countries, find_country, find_country_in_region
+from views.setup_views import _TZ_OPTIONS
 
 # Ephemeral state keyed by user_id while they fill in the country modal
 _pending: dict[int, dict] = {}
@@ -72,11 +74,13 @@ class MatchChannelView(discord.ui.View):
             self.add_item(_RegisterButton(channel_id))
             self.add_item(_LockRosterButton(channel_id))
             self.add_item(_ViewRegistrationsButton(channel_id))
+            self.add_item(_EditScheduleButton(channel_id))
             self.add_item(_CancelMatchButton(channel_id))
         elif status == "locked":
             self.add_item(_UnlockRosterButton(channel_id))
             self.add_item(_StartGameChannelButton(channel_id))
             self.add_item(_ViewRegistrationsButton(channel_id))
+            self.add_item(_EditScheduleButton(channel_id))
             self.add_item(_CancelMatchButton(channel_id))
 
 
@@ -136,7 +140,7 @@ class _RegisterButton(discord.ui.Button):
             existing = await db.get_registration(match["id"], interaction.user.id)
             if existing:
                 await interaction.response.send_message(
-                    "You're already registered. Use `/withdraw` or the **Withdraw** button on your card to opt out.",
+                    "You're already registered. Use the **Withdraw** button on your registration card to opt out.",
                     ephemeral=True,
                 )
                 return
@@ -369,6 +373,225 @@ class _CancelMatchConfirmView(discord.ui.View):
     async def keep(self, button: discord.ui.Button, interaction: discord.Interaction) -> None:
         await interaction.response.edit_message(content="Cancellation aborted.", view=None)
         self.stop()
+
+
+# ── Edit Schedule button + view ───────────────────────────────────────────────
+
+class _EditScheduleButton(discord.ui.Button):
+    def __init__(self, channel_id: int):
+        self._channel_id = channel_id
+        super().__init__(
+            label="Edit Schedule",
+            style=discord.ButtonStyle.secondary,
+            emoji="📅",
+            custom_id=f"edit_schedule_ch_{channel_id}",
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        try:
+            match = await db.get_match_by_channel(self._channel_id)
+            if not match:
+                await interaction.response.send_message("Match not found.", ephemeral=True)
+                return
+            is_leader = interaction.user.id == match["leader_id"]
+            is_admin  = any(r.name in config.ADMIN_ROLES for r in interaction.user.roles)
+            if not is_leader and not is_admin:
+                await interaction.response.send_message(
+                    "Only the Match Leader or an Admin can edit the schedule.", ephemeral=True
+                )
+                return
+            if match["status"] in ("started", "won", "lost", "cancelled"):
+                await interaction.response.send_message(
+                    "The schedule can only be edited before the game starts.", ephemeral=True
+                )
+                return
+            view = _EditScheduleView(match)
+            await interaction.response.send_message(
+                embed=discord.Embed(
+                    title="📅  Edit Match Schedule",
+                    description="Select your timezone to set a new start time.",
+                    color=discord.Color.blue(),
+                ),
+                view=view,
+                ephemeral=True,
+            )
+        except Exception:
+            if not interaction.response.is_done():
+                await interaction.response.send_message(
+                    "Something went wrong. Please try again.", ephemeral=True
+                )
+
+
+class _EditScheduleView(discord.ui.View):
+    """Ephemeral multi-step view: timezone → date/time → confirm → edit Discord event."""
+
+    def __init__(self, match: dict):
+        super().__init__(timeout=300)
+        self.match        = match
+        self._tz_offset: Optional[int] = None
+        self._date: Optional[str]      = None
+        self._hour: Optional[int]      = None
+        self._minute: Optional[int]    = None
+        self._duration_minutes: int    = 60
+        self._add_timezone_select()
+
+    # ── step builders ─────────────────────────────────────────────────────────
+
+    def _add_timezone_select(self) -> None:
+        self.clear_items()
+        options = [
+            discord.SelectOption(label=label, value=str(offset), default=(self._tz_offset == offset))
+            for offset, label in _TZ_OPTIONS
+        ]
+        sel = discord.ui.Select(placeholder="🌍  Your timezone...", options=options)
+        sel.callback = self._on_tz
+        self.add_item(sel)
+
+    def _add_time_selects(self) -> None:
+        self.clear_items()
+        now = datetime.now(timezone.utc)
+
+        date_options = []
+        for i in range(14):
+            d = now.date() + timedelta(days=i)
+            val = d.isoformat()
+            day_str = d.strftime("%a, %b %-d")
+            if i == 0:
+                label = f"Today — {day_str}"
+            elif i == 1:
+                label = f"Tomorrow — {day_str}"
+            else:
+                label = day_str
+            date_options.append(discord.SelectOption(label=label, value=val, default=(self._date == val)))
+        date_sel = discord.ui.Select(placeholder="📅  New start date...", options=date_options, row=0)
+        date_sel.callback = self._on_date
+        self.add_item(date_sel)
+
+        hour_options = [
+            discord.SelectOption(label=f"{h:02d}:__", value=str(h), default=(self._hour == h))
+            for h in range(24)
+        ]
+        hour_sel = discord.ui.Select(placeholder="🕐  Start hour...", options=hour_options, row=1)
+        hour_sel.callback = self._on_hour
+        self.add_item(hour_sel)
+
+        minute_options = [
+            discord.SelectOption(label=f"__{m:02d}", value=str(m), default=(self._minute == m))
+            for m in (0, 15, 30, 45)
+        ]
+        minute_sel = discord.ui.Select(placeholder="⏱  Start minute...", options=minute_options, row=2)
+        minute_sel.callback = self._on_minute
+        self.add_item(minute_sel)
+
+        all_set = all(x is not None for x in (self._date, self._hour, self._minute))
+        confirm_btn = discord.ui.Button(
+            label="Confirm Time →",
+            style=discord.ButtonStyle.primary,
+            disabled=not all_set,
+            row=3,
+        )
+        confirm_btn.callback = self._on_confirm
+        self.add_item(confirm_btn)
+
+        back_btn = discord.ui.Button(label="Back", style=discord.ButtonStyle.secondary, emoji="◀️", row=3)
+        back_btn.callback = self._on_back
+        self.add_item(back_btn)
+
+    def _tz_embed(self) -> discord.Embed:
+        sign = "+" if (self._tz_offset or 0) >= 0 else ""
+        tz_str = f"UTC{sign}{self._tz_offset}" if self._tz_offset is not None else ""
+        desc = f"Times are in **{tz_str}** (your local time)." if tz_str else "Select your timezone."
+        return discord.Embed(title="📅  Edit Match Schedule", description=desc, color=discord.Color.blue())
+
+    # ── callbacks ─────────────────────────────────────────────────────────────
+
+    async def _on_tz(self, interaction: discord.Interaction) -> None:
+        self._tz_offset = int(interaction.data["values"][0])
+        self._date = self._hour = self._minute = None
+        self._add_time_selects()
+        await interaction.response.edit_message(embed=self._tz_embed(), view=self)
+
+    async def _on_date(self, interaction: discord.Interaction) -> None:
+        self._date = interaction.data["values"][0]
+        self._add_time_selects()
+        await interaction.response.edit_message(embed=self._tz_embed(), view=self)
+
+    async def _on_hour(self, interaction: discord.Interaction) -> None:
+        self._hour = int(interaction.data["values"][0])
+        self._add_time_selects()
+        await interaction.response.edit_message(embed=self._tz_embed(), view=self)
+
+    async def _on_minute(self, interaction: discord.Interaction) -> None:
+        self._minute = int(interaction.data["values"][0])
+        self._add_time_selects()
+        await interaction.response.edit_message(embed=self._tz_embed(), view=self)
+
+    async def _on_back(self, interaction: discord.Interaction) -> None:
+        self._date = self._hour = self._minute = None
+        self._add_timezone_select()
+        await interaction.response.edit_message(
+            embed=discord.Embed(
+                title="📅  Edit Match Schedule",
+                description="Select your timezone.",
+                color=discord.Color.blue(),
+            ),
+            view=self,
+        )
+
+    async def _on_confirm(self, interaction: discord.Interaction) -> None:
+        local_start = datetime.fromisoformat(self._date).replace(
+            hour=self._hour, minute=self._minute, second=0, microsecond=0
+        )
+        start_utc = (local_start - timedelta(hours=self._tz_offset)).replace(tzinfo=timezone.utc)
+
+        if start_utc <= datetime.now(timezone.utc):
+            await interaction.response.send_message(
+                "Start time must be in the future.", ephemeral=True
+            )
+            return
+
+        end_utc = start_utc + timedelta(minutes=self._duration_minutes)
+
+        event_id = self.match.get("event_id")
+        if not event_id:
+            await interaction.response.edit_message(
+                embed=discord.Embed(
+                    title="⚠️  No Event Found",
+                    description="This match has no associated Discord event — it may have been created before events were supported.",
+                    color=discord.Color.orange(),
+                ),
+                view=None,
+            )
+            return
+
+        try:
+            event = await interaction.guild.fetch_scheduled_event(event_id)
+            await event.edit(start_time=start_utc, end_time=end_utc)
+            await interaction.response.edit_message(
+                embed=discord.Embed(
+                    title="✅  Schedule Updated",
+                    description=(
+                        f"**New start:** <t:{int(start_utc.timestamp())}:F>\n"
+                        f"**New end:** <t:{int(end_utc.timestamp())}:F>"
+                    ),
+                    color=discord.Color.green(),
+                ),
+                view=None,
+            )
+        except discord.NotFound:
+            await interaction.response.edit_message(
+                embed=discord.Embed(
+                    title="⚠️  Event Not Found",
+                    description="The Discord event appears to have been deleted.",
+                    color=discord.Color.orange(),
+                ),
+                view=None,
+            )
+        except discord.HTTPException:
+            if not interaction.response.is_done():
+                await interaction.response.send_message(
+                    "Failed to update the Discord event. Please try again.", ephemeral=True
+                )
 
 
 # ── View Registrations button ─────────────────────────────────────────────────
@@ -954,7 +1177,7 @@ class _WithdrawButton(discord.ui.Button):
             match = await db.get_match_by_channel(interaction.channel_id)
             if match and match["leader_id"] == interaction.user.id:
                 await interaction.response.send_message(
-                    "As the Match Leader you cannot withdraw — use `/cancelgame` to cancel the match.",
+                    "As the Match Leader you cannot withdraw — use the **Cancel Match** button to cancel the match.",
                     ephemeral=True,
                 )
                 return

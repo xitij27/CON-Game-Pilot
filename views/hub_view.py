@@ -227,7 +227,7 @@ class _MatchManagePanel(discord.ui.View):
         if cog:
             await cog.do_unlock_roster(interaction, self.match)
         else:
-            await interaction.response.send_message("Bot error — try /unlockroster.", ephemeral=True)
+            await interaction.response.send_message("Bot error — please try again.", ephemeral=True)
 
     async def _on_start(self, interaction: discord.Interaction) -> None:
         await interaction.response.send_modal(_StartGameModal(self.match))
@@ -237,14 +237,14 @@ class _MatchManagePanel(discord.ui.View):
         if cog:
             await cog.do_end_game(interaction, self.match, "Won")
         else:
-            await interaction.response.send_message("Bot error — try /endgame.", ephemeral=True)
+            await interaction.response.send_message("Bot error — please try again.", ephemeral=True)
 
     async def _on_lost(self, interaction: discord.Interaction) -> None:
         cog = interaction.client.cogs.get("MatchCog")
         if cog:
             await cog.do_end_game(interaction, self.match, "Lost")
         else:
-            await interaction.response.send_message("Bot error — try /endgame.", ephemeral=True)
+            await interaction.response.send_message("Bot error — please try again.", ephemeral=True)
 
 
 # ── Start game modal (8-digit lobby code) ─────────────────────────────────────
