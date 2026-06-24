@@ -58,7 +58,7 @@ class CommandPost(discord.Bot):
         # "game has ended" message instead of Discord's "interaction failed".
         all_matches = await db.get_non_cancelled_matches()
         for match in all_matches:
-            if match["status"] not in ("started", "won", "lost"):
+            if match["status"] not in ("won", "lost", "cancelled"):
                 self.add_view(MatchChannelView(match["channel_id"], match["status"]))
 
         active_regs = await db.get_all_active_registrations()

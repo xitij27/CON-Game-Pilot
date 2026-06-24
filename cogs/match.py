@@ -13,6 +13,31 @@ from views.roster_view import RosterPanel
 
 DOCTRINE_EMOJI = {"Western": "🟦", "Eastern": "🟥", "European": "🟨"}
 
+_ROMAN: dict[str, int] = {
+    "I": 1, "II": 2, "III": 3, "IV": 4, "V": 5,
+    "VI": 6, "VII": 7, "VIII": 8, "IX": 9, "X": 10,
+}
+
+
+def _find_latest_category(guild: discord.Guild, base_name: str) -> discord.CategoryChannel | None:
+    """Return the highest-numbered category whose name starts with base_name.
+
+    Handles suffixes like '', ' II', ' III', ' IV' (Roman numerals up to X).
+    Falls back to Discord position order if the suffix isn't a recognised numeral.
+    """
+    base_lower = base_name.lower()
+    matches = [c for c in guild.categories if c.name.lower().startswith(base_lower)]
+    if not matches:
+        return None
+
+    def _rank(cat: discord.CategoryChannel) -> int:
+        suffix = cat.name[len(base_name):].strip()
+        if not suffix:
+            return 1
+        return _ROMAN.get(suffix.upper(), cat.position)
+
+    return max(matches, key=_rank)
+
 
 class MatchCog(commands.Cog):
     def __init__(self, bot: discord.Bot):
@@ -253,17 +278,18 @@ class MatchCog(commands.Cog):
                 color=discord.Color.dark_red(),
             )
 
-        archive_category = discord.utils.get(interaction.guild.categories, name=archive_name)
+        archive_category = _find_latest_category(interaction.guild, archive_name)
         if not archive_category:
             archive_category = await interaction.guild.create_category(archive_name)
 
         await db.update_match_status(match["id"], new_status)
         channel = interaction.guild.get_channel(match["channel_id"])
         if channel:
+            await update_channel_panel(match, channel, interaction.client, new_status)
             await channel.edit(category=archive_category)
             await channel.send(embed=embed)
 
-        result_text = f"Game declared as **{result}**. Channel moved to **{archive_name}**."
+        result_text = f"Game declared as **{result}**. Channel moved to **{archive_category.name}**."
         if not interaction.response.is_done():
             await interaction.response.send_message(result_text, ephemeral=True)
         else:

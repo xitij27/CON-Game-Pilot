@@ -83,6 +83,9 @@ class MatchChannelView(discord.ui.View):
             self.add_item(_EditScheduleButton(channel_id))
             self.add_item(_CancelMatchButton(channel_id))
             self.add_item(_EditPlayersButton(channel_id))
+        elif status == "started":
+            self.add_item(_EndGameButton(channel_id, "Won"))
+            self.add_item(_EndGameButton(channel_id, "Lost"))
 
 
 # Backward-compat alias used by hub_view imports
@@ -105,7 +108,7 @@ async def update_channel_panel(
         return
 
     current_status = status or match["status"]
-    if current_status in ("started", "won", "lost", "cancelled"):
+    if current_status in ("won", "lost", "cancelled"):
         await msg.edit(view=None)
     else:
         view = MatchChannelView(match["channel_id"], current_status)
@@ -303,6 +306,53 @@ class _StartGameChannelModal(discord.ui.Modal):
             await cog.do_start_game(interaction, self.match, code)
         else:
             await interaction.response.send_message("Bot error — try again.", ephemeral=True)
+
+
+# ── End Game button (started state, leader/admin) ────────────────────────────
+
+class _EndGameButton(discord.ui.Button):
+    def __init__(self, channel_id: int, result: str):
+        self._channel_id = channel_id
+        self._result     = result
+        style = discord.ButtonStyle.success if result == "Won" else discord.ButtonStyle.danger
+        emoji = "🏆" if result == "Won" else "💀"
+        super().__init__(
+            label=result,
+            style=style,
+            emoji=emoji,
+            custom_id=f"endgame_{result.lower()}_ch_{channel_id}",
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        try:
+            match = await db.get_match_by_channel(self._channel_id)
+            if not match:
+                await interaction.response.send_message("Match not found.", ephemeral=True)
+                return
+            is_leader = interaction.user.id == match["leader_id"]
+            is_admin  = any(r.name in config.ADMIN_ROLES for r in interaction.user.roles)
+            if not is_leader and not is_admin:
+                await interaction.response.send_message(
+                    "Only the Match Leader or an Admin can declare the game outcome.", ephemeral=True
+                )
+                return
+            if match["status"] != "started":
+                await interaction.response.send_message(
+                    "The game is not currently in progress.", ephemeral=True
+                )
+                return
+            # Defer before slow channel.edit call
+            await interaction.response.defer(ephemeral=True)
+            cog = interaction.client.cogs.get("MatchCog")
+            if cog:
+                await cog.do_end_game(interaction, match, self._result)
+            else:
+                await interaction.followup.send("Bot error — please try again.", ephemeral=True)
+        except Exception:
+            if not interaction.response.is_done():
+                await interaction.response.send_message(
+                    "Something went wrong. Please try again.", ephemeral=True
+                )
 
 
 # ── Cancel Match button (leader only) ────────────────────────────────────────
