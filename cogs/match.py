@@ -581,7 +581,7 @@ class MatchCog(commands.Cog):
             inline=False,
         )
         embed.add_field(
-            name="📅  Editing the Schedule  *(Map Leader only)*",
+            name="📅  Editing the Schedule  *(Map Leader / Admin)*",
             value="Click **📅 Edit Schedule** on the pinned message to update the Discord event's start time.",
             inline=False,
         )
