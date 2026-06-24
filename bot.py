@@ -3,7 +3,7 @@ import discord
 import config
 import database as db
 from views.register_view import MatchChannelView, RegistrationCardView
-from views.hub_view import MatchHubControlView, MatchCardView
+from views.hub_view import MatchHubControlView
 
 
 class CommandPost(discord.Bot):
@@ -60,8 +60,6 @@ class CommandPost(discord.Bot):
         for match in all_matches:
             if match["status"] not in ("started", "won", "lost"):
                 self.add_view(MatchChannelView(match["channel_id"], match["status"]))
-            if match["status"] not in ("won", "lost"):
-                self.add_view(MatchCardView(match["channel_id"]))
 
         active_regs = await db.get_all_active_registrations()
         for reg in active_regs:

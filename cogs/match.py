@@ -180,11 +180,8 @@ class MatchCog(commands.Cog):
         if hub_channel:
             match_row = await db.get_match_by_channel(channel.id)
             if match_row:
-                from views.hub_view import MatchCardView
                 hub_embed = await build_match_card_embed(match_row, guild)
-                hub_view  = MatchCardView(channel.id)
-                hub_msg   = await hub_channel.send(embed=hub_embed, view=hub_view)
-                self.bot.add_view(hub_view)
+                hub_msg   = await hub_channel.send(embed=hub_embed)
                 await db.set_hub_message_id(match_id, hub_msg.id)
 
     # ── shared action helpers (called by both slash commands and hub buttons) ──

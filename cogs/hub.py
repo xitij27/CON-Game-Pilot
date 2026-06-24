@@ -6,7 +6,7 @@ from discord.ext import commands
 
 import database as db
 from hub_utils import build_match_card_embed, ensure_hub_channel
-from views.hub_view import MatchHubControlView, MatchCardView
+from views.hub_view import MatchHubControlView
 
 
 _CONTROL_PANEL_KEY = "hub_control_message_id"
@@ -49,11 +49,8 @@ class HubCog(commands.Cog):
             else:
                 try:
                     await hub_channel.fetch_message(hub_msg_id)
-                    card_view = MatchCardView(match["channel_id"])
-                    self.bot.add_view(card_view)
                     restored += 1
                 except (discord.NotFound, discord.Forbidden):
-                    # Message was deleted — repost
                     await self._post_match_card(hub_channel, guild, match)
 
         print(
@@ -69,9 +66,7 @@ class HubCog(commands.Cog):
     ) -> None:
         """Post a fresh match card to hub and save the message ID."""
         embed = await build_match_card_embed(match, guild)
-        view  = MatchCardView(match["channel_id"])
-        msg   = await hub_channel.send(embed=embed, view=view)
-        self.bot.add_view(view)
+        msg   = await hub_channel.send(embed=embed)
         await db.set_hub_message_id(match["id"], msg.id)
 
 

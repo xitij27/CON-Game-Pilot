@@ -83,14 +83,7 @@ async def refresh_hub_card(bot: discord.Bot, match: dict) -> None:
         return
 
     embed = await build_match_card_embed(match, guild)
-
-    # Import here to avoid circular imports at module load time
-    from views.hub_view import MatchCardView
-    if match["status"] in ("cancelled", "won", "lost"):
-        await msg.edit(embed=embed, view=None)
-    else:
-        view = MatchCardView(match["channel_id"])
-        await msg.edit(embed=embed, view=view)
+    await msg.edit(embed=embed, view=None)
 
 
 async def ensure_hub_channel(guild: discord.Guild) -> discord.TextChannel:

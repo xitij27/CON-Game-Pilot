@@ -49,15 +49,13 @@ class _CreateMatchButton(discord.ui.Button):
         await cog.creategame_from_interaction(interaction)
 
 
-# ── Per-match card view (one persistent message per match in match-hub) ───────
+# ── Per-match card view (informational only — no buttons) ────────────────────
 
 class MatchCardView(discord.ui.View):
-    """Card for a single active match. Buttons survive restarts via custom_ids."""
+    """Read-only card in match-hub. Buttons live on the pinned channel message."""
 
     def __init__(self, channel_id: int):
         super().__init__(timeout=None)
-        self.add_item(_RegisterButton(channel_id))
-        self.add_item(_ManageMatchButton(channel_id))
 
 
 class _ManageMatchButton(discord.ui.Button):
