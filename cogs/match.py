@@ -10,6 +10,7 @@ from data.game_data import get_countries
 from views.setup_views import SetupWizard
 from views.register_view import MatchChannelView, RegisterMatchView, _update_roster_embed, update_channel_panel, _ACTIONS_TEXT
 from views.roster_view import RosterPanel
+from views.field_report_view import FieldReportWizard
 
 DOCTRINE_EMOJI = {"Western": "🟦", "Eastern": "🟥", "European": "🟨"}
 
@@ -261,9 +262,9 @@ class MatchCog(commands.Cog):
             await interaction.followup.send("Game started!", ephemeral=True)
 
     async def do_end_game(
-        self, interaction: discord.Interaction, match: dict, result: str
+        self, interaction: discord.Interaction, match: dict, result: str, quiet: bool = False
     ) -> None:
-        """Core /endgame logic — usable from slash command or hub button."""
+        """Core /endgame logic — usable from slash command, hub button, or field report wizard."""
         if result == "Won":
             archive_name = config.VICTORY_CATEGORY
             new_status   = "won"
@@ -292,11 +293,12 @@ class MatchCog(commands.Cog):
             await channel.edit(category=archive_category)
             await channel.send(embed=embed)
 
-        result_text = f"Game declared as **{result}**. Channel moved to **{archive_category.name}**."
-        if not interaction.response.is_done():
-            await interaction.response.send_message(result_text, ephemeral=True)
-        else:
-            await interaction.followup.send(result_text, ephemeral=True)
+        if not quiet:
+            result_text = f"Game declared as **{result}**. Channel moved to **{archive_category.name}**."
+            if not interaction.response.is_done():
+                await interaction.response.send_message(result_text, ephemeral=True)
+            else:
+                await interaction.followup.send(result_text, ephemeral=True)
 
     async def do_unlock_roster(
         self, interaction: discord.Interaction, match: dict
@@ -476,25 +478,69 @@ class MatchCog(commands.Cog):
         ctx: discord.ApplicationContext,
         result: str = discord.Option(description="Game outcome", choices=["Won", "Lost"]),
     ) -> None:
-        await ctx.defer(ephemeral=True)
         match = await db.get_match_by_channel(ctx.channel_id)
         if not match:
-            await ctx.followup.send("This isn't a match channel.", ephemeral=True)
+            await ctx.respond("This isn't a match channel.", ephemeral=True)
             return
         if match["leader_id"] != ctx.author.id and not self._is_admin(ctx.author):
-            await ctx.followup.send(
+            await ctx.respond(
                 "Only the Map Leader or an Admin can declare the game outcome.", ephemeral=True
             )
             return
         if match["status"] != "started":
-            await ctx.followup.send(
+            await ctx.respond(
                 "The game must be in progress before declaring an outcome. "
                 "Use the **Start Game** button in the match channel first.",
                 ephemeral=True,
             )
             return
 
-        await self.do_end_game(ctx.interaction, match, result)
+        regs = await db.get_registrations(match["id"])
+        players = [r for r in regs if r["status"] == "selected"] or regs
+        if not players:
+            await self.do_end_game(ctx.interaction, match, result)
+            return
+
+        members = {r["user_id"]: ctx.guild.get_member(r["user_id"]) for r in players}
+
+        async def on_complete(post_interaction: discord.Interaction) -> None:
+            await self.do_end_game(post_interaction, match, result, quiet=True)
+
+        wizard = FieldReportWizard(match, players, members, ctx.interaction, on_complete=on_complete)
+        await ctx.respond(embed=wizard.build_embed(), view=wizard, ephemeral=True)
+
+    # ── /fieldreport ──────────────────────────────────────────────────────────
+
+    @discord.slash_command(
+        name="fieldreport",
+        description="File a post-game field report for all players (Map Leader / Admin only)",
+    )
+    async def fieldreport(self, ctx: discord.ApplicationContext) -> None:
+        match = await db.get_match_by_channel(ctx.channel_id)
+        if not match:
+            await ctx.respond("This isn't a match channel.", ephemeral=True)
+            return
+        if match["leader_id"] != ctx.author.id and not self._is_admin(ctx.author):
+            await ctx.respond(
+                "Only the Map Leader or an Admin can file a field report.", ephemeral=True
+            )
+            return
+        if match["status"] not in ("won", "lost"):
+            await ctx.respond(
+                "Field reports can only be filed after the game has ended (Won or Lost).",
+                ephemeral=True,
+            )
+            return
+
+        regs = await db.get_registrations(match["id"])
+        players = [r for r in regs if r["status"] == "selected"] or regs
+        if not players:
+            await ctx.respond("No registered players found for this match.", ephemeral=True)
+            return
+
+        members = {r["user_id"]: ctx.guild.get_member(r["user_id"]) for r in players}
+        wizard = FieldReportWizard(match, players, members, ctx.interaction)
+        await ctx.respond(embed=wizard.build_embed(), view=wizard, ephemeral=True)
 
     # ── /cancelgame ───────────────────────────────────────────────────────────
 
@@ -622,6 +668,14 @@ class MatchCog(commands.Cog):
         embed.add_field(
             name="❌  Cancelling  *(Map Leader only)*",
             value="Click **❌ Cancel Match** on the pinned message. The channel and Discord event are deleted after 5 seconds.",
+            inline=False,
+        )
+        embed.add_field(
+            name="📝  Field Report  *(Map Leader / Admin)*",
+            value=(
+                "After the game ends, run `/fieldreport` in the match channel.\n"
+                "Score each player and add overall comments — the bot formats and posts the full report."
+            ),
             inline=False,
         )
         embed.add_field(

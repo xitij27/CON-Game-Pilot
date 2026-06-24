@@ -38,8 +38,8 @@ _ACTIONS_TEXT: dict[str, str] = {
         "❌ **Cancel Match** — *(Leader)* Delete this match and its Discord event"
     ),
     "started": (
-        "🏆 **Won** — *(Leader/Admin)* Declare victory and archive this channel\n"
-        "💀 **Lost** — *(Leader/Admin)* Declare defeat and archive this channel"
+        "🏆 **Won** — *(Leader/Admin)* File a field report, then archive as victory\n"
+        "💀 **Lost** — *(Leader/Admin)* File a field report, then archive as defeat"
     ),
 }
 
@@ -373,13 +373,32 @@ class _EndGameButton(discord.ui.Button):
                     "The game is not currently in progress.", ephemeral=True
                 )
                 return
-            # Defer before slow channel.edit call
-            await interaction.response.defer(ephemeral=True)
+
+            regs = await db.get_registrations(match["id"])
+            players = [r for r in regs if r["status"] == "selected"] or regs
             cog = interaction.client.cogs.get("MatchCog")
-            if cog:
-                await cog.do_end_game(interaction, match, self._result)
-            else:
-                await interaction.followup.send("Bot error — please try again.", ephemeral=True)
+
+            if not players or not cog:
+                # No roster or bot error — archive immediately without a report
+                await interaction.response.defer(ephemeral=True)
+                if cog:
+                    await cog.do_end_game(interaction, match, self._result)
+                else:
+                    await interaction.followup.send("Bot error — please try again.", ephemeral=True)
+                return
+
+            members = {r["user_id"]: interaction.guild.get_member(r["user_id"]) for r in players}
+
+            result = self._result
+
+            async def on_complete(post_interaction: discord.Interaction) -> None:
+                await cog.do_end_game(post_interaction, match, result, quiet=True)
+
+            from views.field_report_view import FieldReportWizard
+            wizard = FieldReportWizard(match, players, members, interaction, on_complete=on_complete)
+            await interaction.response.send_message(
+                embed=wizard.build_embed(), view=wizard, ephemeral=True
+            )
         except Exception:
             if not interaction.response.is_done():
                 await interaction.response.send_message(
