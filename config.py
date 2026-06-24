@@ -9,12 +9,19 @@ GUILD_ID: int = int(os.getenv("SERVER_ID", "0"))
 # Roles permitted to run /creategame (Corporal and above)
 ALLOWED_RANKS: list[str] = [
     "Corporal",
+    "Corporal First Class",
+    "Brigade",
     "Sergeant",
+    "Sergeant First Class",
+    "Master Sergeant",
+    "Second Lieutenant",
     "Lieutenant",
     "Captain",
-    "Major",
+    "Commander",
     "Colonel",
     "General",
+    "General Captain",
+    "Chief of Staff",
 ]
 
 # Roles that always keep channel access after roster lock
@@ -54,6 +61,9 @@ GAME_TYPE_SCALE: dict[str, str] = {
 }
 
 NEW_MAP_CHANNEL: str = "new-map-chat"
+
+CATEGORY_NAME: str = "Game Centre"
+MATCH_HUB_CHANNEL: str    = "match-hub"
 
 MILITARY_ROLES: list[str] = [
     "Ground Support",

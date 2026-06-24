@@ -1,7 +1,7 @@
 import aiosqlite
 from typing import Optional
 
-DB_PATH = "commandpost.db"
+DB_PATH = "con-game-pilot.db"
 
 
 async def init_db() -> None:
@@ -48,6 +48,21 @@ async def init_db() -> None:
         if "roster_message_id" not in cols:
             await db.execute("ALTER TABLE matches ADD COLUMN roster_message_id INTEGER")
             await db.commit()
+        if "hub_message_id" not in cols:
+            await db.execute("ALTER TABLE matches ADD COLUMN hub_message_id INTEGER")
+            await db.commit()
+        if "event_id" not in cols:
+            await db.execute("ALTER TABLE matches ADD COLUMN event_id INTEGER")
+            await db.commit()
+
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute("""
+            CREATE TABLE IF NOT EXISTS settings (
+                key   TEXT PRIMARY KEY,
+                value TEXT NOT NULL
+            )
+        """)
+        await db.commit()
 
 
 # ── matches ──────────────────────────────────────────────────────────────────
@@ -213,6 +228,23 @@ async def update_registration_status(reg_id: int, status: str) -> None:
         await db.commit()
 
 
+async def update_registration_fields(
+    reg_id: int,
+    squad_role: str,
+    military_role: str,
+    primary_country: str,
+    secondary_country: Optional[str],
+) -> None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE registrations "
+            "SET squad_role=?, military_role=?, primary_country=?, secondary_country=? "
+            "WHERE id=?",
+            (squad_role, military_role, primary_country, secondary_country, reg_id),
+        )
+        await db.commit()
+
+
 async def withdraw_registration(reg_id: int) -> None:
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
@@ -250,3 +282,40 @@ async def get_squad_role_counts(match_id: int) -> dict[str, int]:
     for r in regs:
         counts[r["squad_role"]] = counts.get(r["squad_role"], 0) + 1
     return counts
+
+
+async def set_event_id(match_id: int, event_id: int) -> None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE matches SET event_id = ? WHERE id = ?",
+            (event_id, match_id),
+        )
+        await db.commit()
+
+
+async def set_hub_message_id(match_id: int, message_id: int) -> None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE matches SET hub_message_id = ? WHERE id = ?",
+            (message_id, match_id),
+        )
+        await db.commit()
+
+
+# ── settings (key-value store) ────────────────────────────────────────────────
+
+async def get_setting(key: str) -> Optional[str]:
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT value FROM settings WHERE key = ?", (key,)) as cur:
+            row = await cur.fetchone()
+            return row[0] if row else None
+
+
+async def set_setting(key: str, value: str) -> None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT INTO settings (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            (key, value),
+        )
+        await db.commit()

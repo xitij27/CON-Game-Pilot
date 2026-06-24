@@ -1,12 +1,14 @@
 """Registration flow: persistent Register button → role selects → country modal → card."""
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 import discord
 
 import config
 import database as db
 from data.game_data import get_countries, get_all_countries, find_country, find_country_in_region
+from views.setup_views import _TZ_OPTIONS
 
 # Ephemeral state keyed by user_id while they fill in the country modal
 _pending: dict[int, dict] = {}
@@ -18,6 +20,28 @@ DOCTRINE_COLORS = {
 }
 
 _DOCTRINE_EMOJI = {"Western": "🟦", "Eastern": "🟥", "European": "🟨"}
+
+_ACTIONS_TEXT: dict[str, str] = {
+    "open": (
+        "📋 **Register** — Pick your role and country to join\n"
+        "🔒 **Lock Roster** — *(Leader/Admin)* Select final players and make channel private\n"
+        "👥 **Registrations** — See who has signed up and with what roles\n"
+        "📅 **Edit Schedule** — *(Leader/Admin)* Change the Discord event start time\n"
+        "❌ **Cancel Match** — *(Leader)* Delete this match and its Discord event"
+    ),
+    "locked": (
+        "🔓 **Unlock Roster** — *(Leader)* Reopen registration and reset all selections\n"
+        "🎮 **Start Game** — *(Leader/Admin)* Enter the 8-digit lobby code to begin\n"
+        "👥 **Registrations** — View the confirmed roster\n"
+        "📅 **Edit Schedule** — *(Leader/Admin)* Change the Discord event start time\n"
+        "✏️ **Edit Players** — *(Leader/Admin)* Manually update any player's role or country\n"
+        "❌ **Cancel Match** — *(Leader)* Delete this match and its Discord event"
+    ),
+    "started": (
+        "🏆 **Won** — *(Leader/Admin)* File a field report, then archive as victory\n"
+        "💀 **Lost** — *(Leader/Admin)* File a field report, then archive as defeat"
+    ),
+}
 
 
 async def _update_roster_embed(match: dict, channel: discord.TextChannel) -> None:
@@ -55,14 +79,73 @@ async def _update_roster_embed(match: dict, channel: discord.TextChannel) -> Non
     await msg.edit(embed=embed)
 
 
-# ── Persistent outer view (lives on the pinned roster message) ────────────────
+# ── Persistent channel panel (pinned roster message view, status-aware) ──────
 
-class RegisterMatchView(discord.ui.View):
-    """Added to the bot and re-added on every restart for each open match."""
+class MatchChannelView(discord.ui.View):
+    """
+    Pinned message view for a match channel.
+    Buttons shown depend on match status:
+      open   → Register + Lock Roster + View Registrations + Cancel Match
+      locked → Unlock Roster + Start Game + View Registrations + Cancel Match
+      other  → no buttons
+    """
 
-    def __init__(self, channel_id: int):
+    def __init__(self, channel_id: int, status: str = "open"):
         super().__init__(timeout=None)
-        self.add_item(_RegisterButton(channel_id))
+        if status == "open":
+            self.add_item(_RegisterButton(channel_id))
+            self.add_item(_LockRosterButton(channel_id))
+            self.add_item(_ViewRegistrationsButton(channel_id))
+            self.add_item(_EditScheduleButton(channel_id))
+            self.add_item(_CancelMatchButton(channel_id))
+        elif status == "locked":
+            self.add_item(_UnlockRosterButton(channel_id))
+            self.add_item(_StartGameChannelButton(channel_id))
+            self.add_item(_ViewRegistrationsButton(channel_id))
+            self.add_item(_EditScheduleButton(channel_id))
+            self.add_item(_CancelMatchButton(channel_id))
+            self.add_item(_EditPlayersButton(channel_id))
+        elif status == "started":
+            self.add_item(_EndGameButton(channel_id, "Won"))
+            self.add_item(_EndGameButton(channel_id, "Lost"))
+
+
+# Backward-compat alias used by hub_view imports
+RegisterMatchView = MatchChannelView
+
+
+async def update_channel_panel(
+    match: dict,
+    channel: discord.TextChannel,
+    bot,
+    status: str | None = None,
+) -> None:
+    """Swap the view and Available Actions field on the pinned roster message."""
+    roster_msg_id = match.get("roster_message_id")
+    if not roster_msg_id:
+        return
+    try:
+        msg = await channel.fetch_message(roster_msg_id)
+    except (discord.NotFound, discord.Forbidden):
+        return
+
+    current_status = status or match["status"]
+    new_view: discord.ui.View | None = None
+    if current_status not in ("won", "lost", "cancelled"):
+        new_view = MatchChannelView(match["channel_id"], current_status)
+        bot.add_view(new_view)
+
+    # Update the Available Actions field in the embed to match the new status
+    edit_kwargs: dict = {"view": new_view}
+    actions = _ACTIONS_TEXT.get(current_status)
+    if actions and msg.embeds:
+        embed = msg.embeds[0]
+        for i, field in enumerate(embed.fields):
+            if field.name == "Available Actions":
+                embed.set_field_at(i, name="Available Actions", value=actions, inline=False)
+                edit_kwargs["embed"] = embed
+                break
+    await msg.edit(**edit_kwargs)
 
 
 class _RegisterButton(discord.ui.Button):
@@ -93,7 +176,7 @@ class _RegisterButton(discord.ui.Button):
             existing = await db.get_registration(match["id"], interaction.user.id)
             if existing:
                 await interaction.response.send_message(
-                    "You're already registered. Use `/withdraw` or the **Withdraw** button on your card to opt out.",
+                    "You're already registered. Use the **Withdraw** button on your registration card to opt out.",
                     ephemeral=True,
                 )
                 return
@@ -103,6 +186,751 @@ class _RegisterButton(discord.ui.Button):
             is_leader = interaction.user.id == match["leader_id"]
             view = _RoleSelectionView(match, sq_counts, taken_mil, is_leader=is_leader)
             await interaction.response.send_message(embed=view.build_embed(), view=view, ephemeral=True)
+        except Exception:
+            if not interaction.response.is_done():
+                await interaction.response.send_message(
+                    "Something went wrong. Please try again.", ephemeral=True
+                )
+
+
+# ── Lock Roster button ───────────────────────────────────────────────────────
+
+class _LockRosterButton(discord.ui.Button):
+    def __init__(self, channel_id: int):
+        self._channel_id = channel_id
+        super().__init__(
+            label="Lock Roster",
+            style=discord.ButtonStyle.danger,
+            emoji="🔒",
+            custom_id=f"lock_roster_ch_{channel_id}",
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        try:
+            match = await db.get_match_by_channel(self._channel_id)
+            if not match:
+                await interaction.response.send_message("Match not found.", ephemeral=True)
+                return
+            is_leader = interaction.user.id == match["leader_id"]
+            is_admin  = any(r.name in config.ADMIN_ROLES for r in interaction.user.roles)
+            if not is_leader and not is_admin:
+                await interaction.response.send_message(
+                    "Only the Match Leader or an Admin can lock the roster.", ephemeral=True
+                )
+                return
+            if match["status"] != "open":
+                await interaction.response.send_message(
+                    "The roster is already locked.", ephemeral=True
+                )
+                return
+            regs    = await db.get_registrations(match["id"])
+            members = {r["user_id"]: interaction.guild.get_member(r["user_id"]) for r in regs}
+            from views.roster_view import RosterPanel  # lazy — avoids circular import
+            panel = RosterPanel(match, regs, members)
+            await interaction.response.send_message(embed=panel.build_embed(), view=panel, ephemeral=True)
+        except Exception:
+            if not interaction.response.is_done():
+                await interaction.response.send_message(
+                    "Something went wrong. Please try again.", ephemeral=True
+                )
+
+
+# ── Unlock Roster button ──────────────────────────────────────────────────────
+
+class _UnlockRosterButton(discord.ui.Button):
+    def __init__(self, channel_id: int):
+        self._channel_id = channel_id
+        super().__init__(
+            label="Unlock Roster",
+            style=discord.ButtonStyle.secondary,
+            emoji="🔓",
+            custom_id=f"unlock_roster_ch_{channel_id}",
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        try:
+            match = await db.get_match_by_channel(self._channel_id)
+            if not match:
+                await interaction.response.send_message("Match not found.", ephemeral=True)
+                return
+            if interaction.user.id != match["leader_id"]:
+                await interaction.response.send_message(
+                    "Only the Match Leader can unlock the roster.", ephemeral=True
+                )
+                return
+            if match["status"] != "locked":
+                await interaction.response.send_message(
+                    "The roster isn't locked.", ephemeral=True
+                )
+                return
+            cog = interaction.client.cogs.get("MatchCog")
+            if cog:
+                await cog.do_unlock_roster(interaction, match)
+            else:
+                await interaction.response.send_message("Bot error — try again.", ephemeral=True)
+        except Exception:
+            if not interaction.response.is_done():
+                await interaction.response.send_message(
+                    "Something went wrong. Please try again.", ephemeral=True
+                )
+
+
+# ── Start Game button + modal ─────────────────────────────────────────────────
+
+class _StartGameChannelButton(discord.ui.Button):
+    def __init__(self, channel_id: int):
+        self._channel_id = channel_id
+        super().__init__(
+            label="Start Game",
+            style=discord.ButtonStyle.success,
+            emoji="🎮",
+            custom_id=f"startgame_ch_{channel_id}",
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        try:
+            match = await db.get_match_by_channel(self._channel_id)
+            if not match:
+                await interaction.response.send_message("Match not found.", ephemeral=True)
+                return
+            is_leader = interaction.user.id == match["leader_id"]
+            is_admin  = any(r.name in config.ADMIN_ROLES for r in interaction.user.roles)
+            if not is_leader and not is_admin:
+                await interaction.response.send_message(
+                    "Only the Match Leader or an Admin can start the game.", ephemeral=True
+                )
+                return
+            if match["status"] != "locked":
+                await interaction.response.send_message(
+                    "The roster must be locked before starting the game.", ephemeral=True
+                )
+                return
+            await interaction.response.send_modal(_StartGameChannelModal(match))
+        except Exception:
+            if not interaction.response.is_done():
+                await interaction.response.send_message(
+                    "Something went wrong. Please try again.", ephemeral=True
+                )
+
+
+class _StartGameChannelModal(discord.ui.Modal):
+    def __init__(self, match: dict):
+        super().__init__(title="Enter Game Lobby Code")
+        self.match = match
+        self.code_input = discord.ui.InputText(
+            label="Game Code (8 digits)",
+            placeholder="12345678",
+            min_length=8,
+            max_length=8,
+            style=discord.InputTextStyle.short,
+        )
+        self.add_item(self.code_input)
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        code = self.code_input.value.strip()
+        if not (code.isdigit() and len(code) == 8):
+            await interaction.response.send_message(
+                "Game code must be exactly **8 digits**.", ephemeral=True
+            )
+            return
+        cog = interaction.client.cogs.get("MatchCog")
+        if cog:
+            await cog.do_start_game(interaction, self.match, code)
+        else:
+            await interaction.response.send_message("Bot error — try again.", ephemeral=True)
+
+
+# ── End Game button (started state, leader/admin) ────────────────────────────
+
+class _EndGameButton(discord.ui.Button):
+    def __init__(self, channel_id: int, result: str):
+        self._channel_id = channel_id
+        self._result     = result
+        style = discord.ButtonStyle.success if result == "Won" else discord.ButtonStyle.danger
+        emoji = "🏆" if result == "Won" else "💀"
+        super().__init__(
+            label=result,
+            style=style,
+            emoji=emoji,
+            custom_id=f"endgame_{result.lower()}_ch_{channel_id}",
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        try:
+            match = await db.get_match_by_channel(self._channel_id)
+            if not match:
+                await interaction.response.send_message("Match not found.", ephemeral=True)
+                return
+            is_leader = interaction.user.id == match["leader_id"]
+            is_admin  = any(r.name in config.ADMIN_ROLES for r in interaction.user.roles)
+            if not is_leader and not is_admin:
+                await interaction.response.send_message(
+                    "Only the Match Leader or an Admin can declare the game outcome.", ephemeral=True
+                )
+                return
+            if match["status"] != "started":
+                await interaction.response.send_message(
+                    "The game is not currently in progress.", ephemeral=True
+                )
+                return
+
+            regs = await db.get_registrations(match["id"])
+            players = [r for r in regs if r["status"] == "selected"] or regs
+            cog = interaction.client.cogs.get("MatchCog")
+
+            if not players or not cog:
+                # No roster or bot error — archive immediately without a report
+                await interaction.response.defer(ephemeral=True)
+                if cog:
+                    await cog.do_end_game(interaction, match, self._result)
+                else:
+                    await interaction.followup.send("Bot error — please try again.", ephemeral=True)
+                return
+
+            members = {r["user_id"]: interaction.guild.get_member(r["user_id"]) for r in players}
+
+            result = self._result
+
+            async def on_complete(post_interaction: discord.Interaction) -> None:
+                await cog.do_end_game(post_interaction, match, result, quiet=True)
+
+            from views.field_report_view import FieldReportWizard
+            wizard = FieldReportWizard(match, players, members, interaction, on_complete=on_complete)
+            await interaction.response.send_message(
+                embed=wizard.build_embed(), view=wizard, ephemeral=True
+            )
+        except Exception:
+            if not interaction.response.is_done():
+                await interaction.response.send_message(
+                    "Something went wrong. Please try again.", ephemeral=True
+                )
+
+
+# ── Cancel Match button (leader only) ────────────────────────────────────────
+
+class _CancelMatchButton(discord.ui.Button):
+    def __init__(self, channel_id: int):
+        self._channel_id = channel_id
+        super().__init__(
+            label="Cancel Match",
+            style=discord.ButtonStyle.danger,
+            emoji="❌",
+            custom_id=f"cancel_match_ch_{channel_id}",
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        try:
+            match = await db.get_match_by_channel(self._channel_id)
+            if not match:
+                await interaction.response.send_message("Match not found.", ephemeral=True)
+                return
+            if interaction.user.id != match["leader_id"]:
+                await interaction.response.send_message(
+                    "Only the Match Leader can cancel this match.", ephemeral=True
+                )
+                return
+            if match["status"] in ("started", "won", "lost"):
+                await interaction.response.send_message(
+                    "The game is already in progress — use `/endgame` to declare the outcome.",
+                    ephemeral=True,
+                )
+                return
+            await interaction.response.send_message(
+                embed=discord.Embed(
+                    title="⚠️  Cancel this match?",
+                    description="The channel and scheduled event will be **permanently deleted**.",
+                    color=discord.Color.red(),
+                ),
+                view=_CancelMatchConfirmView(match),
+                ephemeral=True,
+            )
+        except Exception:
+            if not interaction.response.is_done():
+                await interaction.response.send_message(
+                    "Something went wrong. Please try again.", ephemeral=True
+                )
+
+
+class _CancelMatchConfirmView(discord.ui.View):
+    def __init__(self, match: dict):
+        super().__init__(timeout=60)
+        self.match = match
+
+    @discord.ui.button(label="Yes, Cancel Match", style=discord.ButtonStyle.danger)
+    async def confirm(self, button: discord.ui.Button, interaction: discord.Interaction) -> None:
+        await interaction.response.edit_message(
+            embed=discord.Embed(
+                title="Match cancelled.",
+                description="The channel will be deleted in 5 seconds.",
+                color=discord.Color.dark_grey(),
+            ),
+            view=None,
+        )
+        self.stop()
+        cog = interaction.client.cogs.get("MatchCog")
+        if cog:
+            await cog.do_cancel_match(self.match, interaction.guild)
+
+    @discord.ui.button(label="Keep Match", style=discord.ButtonStyle.secondary)
+    async def keep(self, button: discord.ui.Button, interaction: discord.Interaction) -> None:
+        await interaction.response.edit_message(content="Cancellation aborted.", view=None)
+        self.stop()
+
+
+# ── Edit Schedule button + view ───────────────────────────────────────────────
+
+class _EditScheduleButton(discord.ui.Button):
+    def __init__(self, channel_id: int):
+        self._channel_id = channel_id
+        super().__init__(
+            label="Edit Schedule",
+            style=discord.ButtonStyle.secondary,
+            emoji="📅",
+            custom_id=f"edit_schedule_ch_{channel_id}",
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        try:
+            match = await db.get_match_by_channel(self._channel_id)
+            if not match:
+                await interaction.response.send_message("Match not found.", ephemeral=True)
+                return
+            is_leader = interaction.user.id == match["leader_id"]
+            is_admin  = any(r.name in config.ADMIN_ROLES for r in interaction.user.roles)
+            if not is_leader and not is_admin:
+                await interaction.response.send_message(
+                    "Only the Match Leader or an Admin can edit the schedule.", ephemeral=True
+                )
+                return
+            if match["status"] in ("started", "won", "lost", "cancelled"):
+                await interaction.response.send_message(
+                    "The schedule can only be edited before the game starts.", ephemeral=True
+                )
+                return
+            view = _EditScheduleView(match)
+            await interaction.response.send_message(
+                embed=discord.Embed(
+                    title="📅  Edit Match Schedule",
+                    description="Select your timezone to set a new start time.",
+                    color=discord.Color.blue(),
+                ),
+                view=view,
+                ephemeral=True,
+            )
+        except Exception:
+            if not interaction.response.is_done():
+                await interaction.response.send_message(
+                    "Something went wrong. Please try again.", ephemeral=True
+                )
+
+
+class _EditScheduleView(discord.ui.View):
+    """Ephemeral multi-step view: timezone → date/time → confirm → edit Discord event."""
+
+    def __init__(self, match: dict):
+        super().__init__(timeout=300)
+        self.match        = match
+        self._tz_offset: Optional[int] = None
+        self._date: Optional[str]      = None
+        self._hour: Optional[int]      = None
+        self._minute: Optional[int]    = None
+        self._duration_minutes: int    = 60
+        self._add_timezone_select()
+
+    # ── step builders ─────────────────────────────────────────────────────────
+
+    def _add_timezone_select(self) -> None:
+        self.clear_items()
+        options = [
+            discord.SelectOption(label=label, value=str(offset), default=(self._tz_offset == offset))
+            for offset, label in _TZ_OPTIONS
+        ]
+        sel = discord.ui.Select(placeholder="🌍  Your timezone...", options=options)
+        sel.callback = self._on_tz
+        self.add_item(sel)
+
+    def _add_time_selects(self) -> None:
+        self.clear_items()
+        now = datetime.now(timezone.utc)
+
+        date_options = []
+        for i in range(14):
+            d = now.date() + timedelta(days=i)
+            val = d.isoformat()
+            day_str = d.strftime("%a, %b %-d")
+            if i == 0:
+                label = f"Today — {day_str}"
+            elif i == 1:
+                label = f"Tomorrow — {day_str}"
+            else:
+                label = day_str
+            date_options.append(discord.SelectOption(label=label, value=val, default=(self._date == val)))
+        date_sel = discord.ui.Select(placeholder="📅  New start date...", options=date_options, row=0)
+        date_sel.callback = self._on_date
+        self.add_item(date_sel)
+
+        hour_options = [
+            discord.SelectOption(label=f"{h:02d}:__", value=str(h), default=(self._hour == h))
+            for h in range(24)
+        ]
+        hour_sel = discord.ui.Select(placeholder="🕐  Start hour...", options=hour_options, row=1)
+        hour_sel.callback = self._on_hour
+        self.add_item(hour_sel)
+
+        minute_options = [
+            discord.SelectOption(label=f"__{m:02d}", value=str(m), default=(self._minute == m))
+            for m in (0, 15, 30, 45)
+        ]
+        minute_sel = discord.ui.Select(placeholder="⏱  Start minute...", options=minute_options, row=2)
+        minute_sel.callback = self._on_minute
+        self.add_item(minute_sel)
+
+        all_set = all(x is not None for x in (self._date, self._hour, self._minute))
+        confirm_btn = discord.ui.Button(
+            label="Confirm Time →",
+            style=discord.ButtonStyle.primary,
+            disabled=not all_set,
+            row=3,
+        )
+        confirm_btn.callback = self._on_confirm
+        self.add_item(confirm_btn)
+
+        back_btn = discord.ui.Button(label="Back", style=discord.ButtonStyle.secondary, emoji="◀️", row=3)
+        back_btn.callback = self._on_back
+        self.add_item(back_btn)
+
+    def _tz_embed(self) -> discord.Embed:
+        sign = "+" if (self._tz_offset or 0) >= 0 else ""
+        tz_str = f"UTC{sign}{self._tz_offset}" if self._tz_offset is not None else ""
+        desc = f"Times are in **{tz_str}** (your local time)." if tz_str else "Select your timezone."
+        return discord.Embed(title="📅  Edit Match Schedule", description=desc, color=discord.Color.blue())
+
+    # ── callbacks ─────────────────────────────────────────────────────────────
+
+    async def _on_tz(self, interaction: discord.Interaction) -> None:
+        self._tz_offset = int(interaction.data["values"][0])
+        self._date = self._hour = self._minute = None
+        self._add_time_selects()
+        await interaction.response.edit_message(embed=self._tz_embed(), view=self)
+
+    async def _on_date(self, interaction: discord.Interaction) -> None:
+        self._date = interaction.data["values"][0]
+        self._add_time_selects()
+        await interaction.response.edit_message(embed=self._tz_embed(), view=self)
+
+    async def _on_hour(self, interaction: discord.Interaction) -> None:
+        self._hour = int(interaction.data["values"][0])
+        self._add_time_selects()
+        await interaction.response.edit_message(embed=self._tz_embed(), view=self)
+
+    async def _on_minute(self, interaction: discord.Interaction) -> None:
+        self._minute = int(interaction.data["values"][0])
+        self._add_time_selects()
+        await interaction.response.edit_message(embed=self._tz_embed(), view=self)
+
+    async def _on_back(self, interaction: discord.Interaction) -> None:
+        self._date = self._hour = self._minute = None
+        self._add_timezone_select()
+        await interaction.response.edit_message(
+            embed=discord.Embed(
+                title="📅  Edit Match Schedule",
+                description="Select your timezone.",
+                color=discord.Color.blue(),
+            ),
+            view=self,
+        )
+
+    async def _on_confirm(self, interaction: discord.Interaction) -> None:
+        # All validation is synchronous — do it before any response call
+        local_start = datetime.fromisoformat(self._date).replace(
+            hour=self._hour, minute=self._minute, second=0, microsecond=0
+        )
+        start_utc = (local_start - timedelta(hours=self._tz_offset)).replace(tzinfo=timezone.utc)
+
+        if start_utc <= datetime.now(timezone.utc):
+            await interaction.response.send_message(
+                "Start time must be in the future.", ephemeral=True
+            )
+            return
+
+        end_utc = start_utc + timedelta(minutes=self._duration_minutes)
+
+        event_id = self.match.get("event_id")
+        if not event_id:
+            await interaction.response.edit_message(
+                embed=discord.Embed(
+                    title="⚠️  No Event Found",
+                    description="This match has no associated Discord event — it may have been created before events were supported.",
+                    color=discord.Color.orange(),
+                ),
+                view=None,
+            )
+            return
+
+        # Defer BEFORE the slow Discord API calls (fetch + edit can exceed 3 s)
+        await interaction.response.defer(ephemeral=True)
+
+        try:
+            event = await interaction.guild.fetch_scheduled_event(event_id)
+            await event.edit(start_time=start_utc, end_time=end_utc)
+            await interaction.edit_original_response(
+                embed=discord.Embed(
+                    title="✅  Schedule Updated",
+                    description=(
+                        f"**New start:** <t:{int(start_utc.timestamp())}:F>\n"
+                        f"**New end:** <t:{int(end_utc.timestamp())}:F>"
+                    ),
+                    color=discord.Color.green(),
+                ),
+                view=None,
+            )
+        except discord.NotFound:
+            await interaction.edit_original_response(
+                embed=discord.Embed(
+                    title="⚠️  Event Not Found",
+                    description="The Discord event appears to have been deleted.",
+                    color=discord.Color.orange(),
+                ),
+                view=None,
+            )
+        except discord.HTTPException:
+            await interaction.followup.send(
+                "Failed to update the Discord event. Please try again.", ephemeral=True
+            )
+
+
+# ── Edit Players button + panel + modal (locked state, leader/admin) ──────────
+
+class _EditPlayersButton(discord.ui.Button):
+    def __init__(self, channel_id: int):
+        self._channel_id = channel_id
+        super().__init__(
+            label="Edit Players",
+            style=discord.ButtonStyle.secondary,
+            emoji="✏️",
+            custom_id=f"edit_players_ch_{channel_id}",
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        try:
+            match = await db.get_match_by_channel(self._channel_id)
+            if not match:
+                await interaction.response.send_message("Match not found.", ephemeral=True)
+                return
+            is_leader = interaction.user.id == match["leader_id"]
+            is_admin  = any(r.name in config.ADMIN_ROLES for r in interaction.user.roles)
+            if not is_leader and not is_admin:
+                await interaction.response.send_message(
+                    "Only the Match Leader or an Admin can edit player registrations.", ephemeral=True
+                )
+                return
+            if match["status"] != "locked":
+                await interaction.response.send_message(
+                    "Player registrations can only be edited while the roster is locked.", ephemeral=True
+                )
+                return
+
+            regs = await db.get_registrations(match["id"])
+            selected = [r for r in regs if r["status"] == "selected"]
+            if not selected:
+                await interaction.response.send_message("No selected players to edit.", ephemeral=True)
+                return
+
+            panel = _EditPlayersPanel(match, selected, interaction.guild)
+            await interaction.response.send_message(
+                embed=panel.build_embed(),
+                view=panel,
+                ephemeral=True,
+            )
+        except Exception:
+            if not interaction.response.is_done():
+                await interaction.response.send_message(
+                    "Something went wrong. Please try again.", ephemeral=True
+                )
+
+
+class _EditPlayersPanel(discord.ui.View):
+    """Ephemeral panel listing selected players; each button opens an edit modal."""
+
+    def __init__(self, match: dict, regs: list[dict], guild: discord.Guild):
+        super().__init__(timeout=300)
+        self.match = match
+        self.regs  = regs
+        for reg in regs[:25]:
+            member = guild.get_member(reg["user_id"])
+            label  = (member.display_name if member else f"User {reg['user_id']}")[:20]
+            btn = discord.ui.Button(label=label, style=discord.ButtonStyle.secondary, emoji="✏️")
+            btn.callback = self._make_callback(reg)
+            self.add_item(btn)
+
+    def build_embed(self) -> discord.Embed:
+        lines = []
+        for reg in self.regs:
+            sec = f" + {reg['secondary_country']}" if reg["secondary_country"] else ""
+            lines.append(
+                f"**<@{reg['user_id']}>** — {reg['squad_role']} · {reg['military_role'] or '—'}\n"
+                f"　{reg['primary_country']}{sec}"
+            )
+        return discord.Embed(
+            title="✏️  Edit Player Registrations",
+            description="\n\n".join(lines),
+            color=discord.Color.orange(),
+        ).set_footer(text="Click a player's button to edit their entry.")
+
+    def _make_callback(self, reg: dict):
+        async def callback(interaction: discord.Interaction) -> None:
+            await interaction.response.send_modal(_EditPlayerModal(self.match, reg))
+        return callback
+
+
+class _EditPlayerModal(discord.ui.Modal):
+    def __init__(self, match: dict, reg: dict):
+        super().__init__(title="Edit Player Registration")
+        self.match = match
+        self.reg   = reg
+
+        self.squad_input = discord.ui.InputText(
+            label="Squad Role",
+            placeholder=f"Valid: {', '.join(config.SQUAD_ROLES)}",
+            value=reg["squad_role"],
+            style=discord.InputTextStyle.short,
+        )
+        self.mil_input = discord.ui.InputText(
+            label="Military Role  (blank if Spy)",
+            placeholder=f"Valid: {', '.join(config.MILITARY_ROLES)}",
+            value=reg["military_role"] or "",
+            style=discord.InputTextStyle.short,
+            required=False,
+        )
+        self.primary_input = discord.ui.InputText(
+            label="Primary Country",
+            value=reg["primary_country"],
+            style=discord.InputTextStyle.short,
+        )
+        self.secondary_input = discord.ui.InputText(
+            label="Secondary Country  (blank to clear)",
+            value=reg["secondary_country"] or "",
+            style=discord.InputTextStyle.short,
+            required=False,
+        )
+        self.add_item(self.squad_input)
+        self.add_item(self.mil_input)
+        self.add_item(self.primary_input)
+        self.add_item(self.secondary_input)
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        squad_raw    = self.squad_input.value.strip()
+        mil_raw      = self.mil_input.value.strip()
+        primary_raw  = self.primary_input.value.strip()
+        secondary_raw = self.secondary_input.value.strip()
+
+        # Normalise squad role (case-insensitive)
+        squad_role = next((r for r in config.SQUAD_ROLES if r.lower() == squad_raw.lower()), None)
+        if not squad_role:
+            await interaction.response.send_message(
+                f"**{squad_raw}** is not a valid squad role. Valid: {', '.join(config.SQUAD_ROLES)}",
+                ephemeral=True,
+            )
+            return
+
+        # Normalise military role (optional for Spy)
+        military_role: str = ""
+        if mil_raw:
+            matched = next((r for r in config.MILITARY_ROLES if r.lower() == mil_raw.lower()), None)
+            if not matched:
+                await interaction.response.send_message(
+                    f"**{mil_raw}** is not a valid military role. Valid: {', '.join(config.MILITARY_ROLES)}",
+                    ephemeral=True,
+                )
+                return
+            military_role = matched
+
+        # Resolve primary country across the full game type map
+        primary_c = find_country(self.match["game_type"], primary_raw)
+        if not primary_c:
+            await interaction.response.send_message(
+                f"**{primary_raw}** is not a valid country for {self.match['game_type']}.",
+                ephemeral=True,
+            )
+            return
+
+        # Resolve secondary country (optional)
+        secondary_c: Optional[dict] = None
+        if secondary_raw:
+            secondary_c = find_country(self.match["game_type"], secondary_raw)
+            if not secondary_c:
+                await interaction.response.send_message(
+                    f"**{secondary_raw}** is not a valid country for {self.match['game_type']}.",
+                    ephemeral=True,
+                )
+                return
+            if secondary_c["name"].lower() == primary_c["name"].lower():
+                await interaction.response.send_message(
+                    "Primary and Secondary country cannot be the same.", ephemeral=True
+                )
+                return
+
+        await db.update_registration_fields(
+            self.reg["id"],
+            squad_role=squad_role,
+            military_role=military_role,
+            primary_country=primary_c["name"],
+            secondary_country=secondary_c["name"] if secondary_c else None,
+        )
+
+        member = interaction.guild.get_member(self.reg["user_id"])
+        name   = member.display_name if member else f"<@{self.reg['user_id']}>"
+        sec_str = f" + {secondary_c['name']}" if secondary_c else ""
+        await interaction.response.send_message(
+            f"✅  **{name}** updated — {squad_role} · {military_role or '—'} · "
+            f"{primary_c['name']}{sec_str}",
+            ephemeral=True,
+        )
+
+
+# ── View Registrations button ─────────────────────────────────────────────────
+
+class _ViewRegistrationsButton(discord.ui.Button):
+    def __init__(self, channel_id: int):
+        self._channel_id = channel_id
+        super().__init__(
+            label="Registrations",
+            style=discord.ButtonStyle.secondary,
+            emoji="👥",
+            custom_id=f"view_regs_{channel_id}",
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        try:
+            match = await db.get_match_by_channel(self._channel_id)
+            if not match:
+                await interaction.response.send_message("Match not found.", ephemeral=True)
+                return
+
+            regs = await db.get_registrations(match["id"])
+            if not regs:
+                await interaction.response.send_message(
+                    "No one has registered yet.", ephemeral=True
+                )
+                return
+
+            lines = []
+            for reg in regs:
+                member = interaction.guild.get_member(reg["user_id"])
+                name = member.display_name if member else f"<@{reg['user_id']}>"
+                sec = f" + **{reg['secondary_country']}**" if reg["secondary_country"] else ""
+                lines.append(
+                    f"**{name}** — {reg['military_role'] or '—'} · {reg['squad_role']}\n"
+                    f"　🎯 **{reg['primary_country']}**{sec}"
+                )
+
+            embed = discord.Embed(
+                title=f"👥  Registrations  ·  {match['game_type']} / {match['region']}",
+                description="\n\n".join(lines),
+                color=discord.Color.blurple(),
+            )
+            embed.set_footer(text=f"{len(regs)} player(s) registered")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
         except Exception:
             if not interaction.response.is_done():
                 await interaction.response.send_message(
@@ -127,14 +955,10 @@ class _RoleSelectionView(discord.ui.View):
                 or sq_counts.get(r, 0) < config.SQUAD_ROLE_LIMITS[r]
             )
         ]
-        # Leaders are never blocked by taken military roles — they always see
-        # all roles and bypass the slot check (their slot is always reserved).
-        if is_leader:
-            self._available_mil = list(config.MILITARY_ROLES)
-            self._taken_mil = set(taken_mil)
-        else:
-            self._available_mil = [r for r in config.MILITARY_ROLES if r not in taken_mil]
-            self._taken_mil = set()
+        # Taken roles are hidden from the dropdown for everyone.
+        # The leader still bypasses the server-side taken check on submit
+        # (race-condition protection), but only sees actually-available roles here.
+        self._available_mil = [r for r in config.MILITARY_ROLES if r not in taken_mil]
         self._rebuild()
 
     def build_embed(self) -> discord.Embed:
@@ -181,10 +1005,7 @@ class _RoleSelectionView(discord.ui.View):
                 mil_select = discord.ui.Select(
                     placeholder="Military Role...",
                     options=[
-                        discord.SelectOption(
-                            label=r, value=r, default=(r == self.military_role),
-                            description="(taken by another player)" if r in self._taken_mil else "",
-                        )
+                        discord.SelectOption(label=r, value=r, default=(r == self.military_role))
                         for r in self._available_mil
                     ],
                     custom_id="military_role_select",
@@ -643,7 +1464,7 @@ class _WithdrawButton(discord.ui.Button):
             match = await db.get_match_by_channel(interaction.channel_id)
             if match and match["leader_id"] == interaction.user.id:
                 await interaction.response.send_message(
-                    "As the Match Leader you cannot withdraw — use `/cancelgame` to cancel the match.",
+                    "As the Match Leader you cannot withdraw — use the **Cancel Match** button to cancel the match.",
                     ephemeral=True,
                 )
                 return
