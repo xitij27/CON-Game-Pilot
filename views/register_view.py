@@ -21,6 +21,28 @@ DOCTRINE_COLORS = {
 
 _DOCTRINE_EMOJI = {"Western": "🟦", "Eastern": "🟥", "European": "🟨"}
 
+_ACTIONS_TEXT: dict[str, str] = {
+    "open": (
+        "📋 **Register** — Pick your role and country to join\n"
+        "🔒 **Lock Roster** — *(Leader/Admin)* Select final players and make channel private\n"
+        "👥 **Registrations** — See who has signed up and with what roles\n"
+        "📅 **Edit Schedule** — *(Leader/Admin)* Change the Discord event start time\n"
+        "❌ **Cancel Match** — *(Leader)* Delete this match and its Discord event"
+    ),
+    "locked": (
+        "🔓 **Unlock Roster** — *(Leader)* Reopen registration and reset all selections\n"
+        "🎮 **Start Game** — *(Leader/Admin)* Enter the 8-digit lobby code to begin\n"
+        "👥 **Registrations** — View the confirmed roster\n"
+        "📅 **Edit Schedule** — *(Leader/Admin)* Change the Discord event start time\n"
+        "✏️ **Edit Players** — *(Leader/Admin)* Manually update any player's role or country\n"
+        "❌ **Cancel Match** — *(Leader)* Delete this match and its Discord event"
+    ),
+    "started": (
+        "🏆 **Won** — *(Leader/Admin)* Declare victory and archive this channel\n"
+        "💀 **Lost** — *(Leader/Admin)* Declare defeat and archive this channel"
+    ),
+}
+
 
 async def _update_roster_embed(match: dict, channel: discord.TextChannel) -> None:
     """Edit the pinned roster message to show only unclaimed primary countries."""
@@ -98,7 +120,7 @@ async def update_channel_panel(
     bot,
     status: str | None = None,
 ) -> None:
-    """Swap the view on the pinned roster message to reflect current status."""
+    """Swap the view and Available Actions field on the pinned roster message."""
     roster_msg_id = match.get("roster_message_id")
     if not roster_msg_id:
         return
@@ -108,12 +130,22 @@ async def update_channel_panel(
         return
 
     current_status = status or match["status"]
-    if current_status in ("won", "lost", "cancelled"):
-        await msg.edit(view=None)
-    else:
-        view = MatchChannelView(match["channel_id"], current_status)
-        bot.add_view(view)
-        await msg.edit(view=view)
+    new_view: discord.ui.View | None = None
+    if current_status not in ("won", "lost", "cancelled"):
+        new_view = MatchChannelView(match["channel_id"], current_status)
+        bot.add_view(new_view)
+
+    # Update the Available Actions field in the embed to match the new status
+    edit_kwargs: dict = {"view": new_view}
+    actions = _ACTIONS_TEXT.get(current_status)
+    if actions and msg.embeds:
+        embed = msg.embeds[0]
+        for i, field in enumerate(embed.fields):
+            if field.name == "Available Actions":
+                embed.set_field_at(i, name="Available Actions", value=actions, inline=False)
+                edit_kwargs["embed"] = embed
+                break
+    await msg.edit(**edit_kwargs)
 
 
 class _RegisterButton(discord.ui.Button):

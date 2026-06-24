@@ -8,7 +8,7 @@ import config
 import database as db
 from data.game_data import get_countries
 from views.setup_views import SetupWizard
-from views.register_view import MatchChannelView, RegisterMatchView, _update_roster_embed, update_channel_panel
+from views.register_view import MatchChannelView, RegisterMatchView, _update_roster_embed, update_channel_panel, _ACTIONS_TEXT
 from views.roster_view import RosterPanel
 
 DOCTRINE_EMOJI = {"Western": "🟦", "Eastern": "🟥", "European": "🟨"}
@@ -374,6 +374,11 @@ class MatchCog(commands.Cog):
                 "1× Scout  ·  1× Spy *(optional)*  ·  ∞ Soldiers\n"
                 "-# Spy may pick from any country in the full game type map."
             ),
+            inline=False,
+        )
+        embed.add_field(
+            name="Available Actions",
+            value=_ACTIONS_TEXT["open"],
             inline=False,
         )
         embed.set_footer(text="Click Register below to join.")
