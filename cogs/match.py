@@ -87,6 +87,9 @@ class MatchCog(commands.Cog):
     async def _wizard_confirmed(
         self, interaction: discord.Interaction, wizard: SetupWizard
     ) -> None:
+        # Defer immediately — channel + event creation easily exceeds 3 s
+        await interaction.response.defer(ephemeral=True)
+
         guild = interaction.guild
 
         category = discord.utils.get(guild.categories, name=config.PREGAME_CATEGORY)
@@ -189,7 +192,7 @@ class MatchCog(commands.Cog):
                 )
             )
 
-        await interaction.response.edit_message(
+        await interaction.edit_original_response(
             embed=discord.Embed(
                 title="✅  Match created!",
                 description=f"Channel: {channel.mention}",
