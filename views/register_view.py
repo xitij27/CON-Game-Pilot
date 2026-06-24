@@ -82,6 +82,7 @@ class MatchChannelView(discord.ui.View):
             self.add_item(_ViewRegistrationsButton(channel_id))
             self.add_item(_EditScheduleButton(channel_id))
             self.add_item(_CancelMatchButton(channel_id))
+            self.add_item(_EditPlayersButton(channel_id))
 
 
 # Backward-compat alias used by hub_view imports
@@ -595,6 +596,195 @@ class _EditScheduleView(discord.ui.View):
             await interaction.followup.send(
                 "Failed to update the Discord event. Please try again.", ephemeral=True
             )
+
+
+# ── Edit Players button + panel + modal (locked state, leader/admin) ──────────
+
+class _EditPlayersButton(discord.ui.Button):
+    def __init__(self, channel_id: int):
+        self._channel_id = channel_id
+        super().__init__(
+            label="Edit Players",
+            style=discord.ButtonStyle.secondary,
+            emoji="✏️",
+            custom_id=f"edit_players_ch_{channel_id}",
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        try:
+            match = await db.get_match_by_channel(self._channel_id)
+            if not match:
+                await interaction.response.send_message("Match not found.", ephemeral=True)
+                return
+            is_leader = interaction.user.id == match["leader_id"]
+            is_admin  = any(r.name in config.ADMIN_ROLES for r in interaction.user.roles)
+            if not is_leader and not is_admin:
+                await interaction.response.send_message(
+                    "Only the Match Leader or an Admin can edit player registrations.", ephemeral=True
+                )
+                return
+            if match["status"] != "locked":
+                await interaction.response.send_message(
+                    "Player registrations can only be edited while the roster is locked.", ephemeral=True
+                )
+                return
+
+            regs = await db.get_registrations(match["id"])
+            selected = [r for r in regs if r["status"] == "selected"]
+            if not selected:
+                await interaction.response.send_message("No selected players to edit.", ephemeral=True)
+                return
+
+            panel = _EditPlayersPanel(match, selected, interaction.guild)
+            await interaction.response.send_message(
+                embed=panel.build_embed(),
+                view=panel,
+                ephemeral=True,
+            )
+        except Exception:
+            if not interaction.response.is_done():
+                await interaction.response.send_message(
+                    "Something went wrong. Please try again.", ephemeral=True
+                )
+
+
+class _EditPlayersPanel(discord.ui.View):
+    """Ephemeral panel listing selected players; each button opens an edit modal."""
+
+    def __init__(self, match: dict, regs: list[dict], guild: discord.Guild):
+        super().__init__(timeout=300)
+        self.match = match
+        self.regs  = regs
+        for reg in regs[:25]:
+            member = guild.get_member(reg["user_id"])
+            label  = (member.display_name if member else f"User {reg['user_id']}")[:20]
+            btn = discord.ui.Button(label=label, style=discord.ButtonStyle.secondary, emoji="✏️")
+            btn.callback = self._make_callback(reg)
+            self.add_item(btn)
+
+    def build_embed(self) -> discord.Embed:
+        lines = []
+        for reg in self.regs:
+            sec = f" + {reg['secondary_country']}" if reg["secondary_country"] else ""
+            lines.append(
+                f"**<@{reg['user_id']}>** — {reg['squad_role']} · {reg['military_role'] or '—'}\n"
+                f"　{reg['primary_country']}{sec}"
+            )
+        return discord.Embed(
+            title="✏️  Edit Player Registrations",
+            description="\n\n".join(lines),
+            color=discord.Color.orange(),
+        ).set_footer(text="Click a player's button to edit their entry.")
+
+    def _make_callback(self, reg: dict):
+        async def callback(interaction: discord.Interaction) -> None:
+            await interaction.response.send_modal(_EditPlayerModal(self.match, reg))
+        return callback
+
+
+class _EditPlayerModal(discord.ui.Modal):
+    def __init__(self, match: dict, reg: dict):
+        super().__init__(title="Edit Player Registration")
+        self.match = match
+        self.reg   = reg
+
+        self.squad_input = discord.ui.InputText(
+            label="Squad Role",
+            placeholder=f"Valid: {', '.join(config.SQUAD_ROLES)}",
+            value=reg["squad_role"],
+            style=discord.InputTextStyle.short,
+        )
+        self.mil_input = discord.ui.InputText(
+            label="Military Role  (blank if Spy)",
+            placeholder=f"Valid: {', '.join(config.MILITARY_ROLES)}",
+            value=reg["military_role"] or "",
+            style=discord.InputTextStyle.short,
+            required=False,
+        )
+        self.primary_input = discord.ui.InputText(
+            label="Primary Country",
+            value=reg["primary_country"],
+            style=discord.InputTextStyle.short,
+        )
+        self.secondary_input = discord.ui.InputText(
+            label="Secondary Country  (blank to clear)",
+            value=reg["secondary_country"] or "",
+            style=discord.InputTextStyle.short,
+            required=False,
+        )
+        self.add_item(self.squad_input)
+        self.add_item(self.mil_input)
+        self.add_item(self.primary_input)
+        self.add_item(self.secondary_input)
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        squad_raw    = self.squad_input.value.strip()
+        mil_raw      = self.mil_input.value.strip()
+        primary_raw  = self.primary_input.value.strip()
+        secondary_raw = self.secondary_input.value.strip()
+
+        # Normalise squad role (case-insensitive)
+        squad_role = next((r for r in config.SQUAD_ROLES if r.lower() == squad_raw.lower()), None)
+        if not squad_role:
+            await interaction.response.send_message(
+                f"**{squad_raw}** is not a valid squad role. Valid: {', '.join(config.SQUAD_ROLES)}",
+                ephemeral=True,
+            )
+            return
+
+        # Normalise military role (optional for Spy)
+        military_role: str = ""
+        if mil_raw:
+            matched = next((r for r in config.MILITARY_ROLES if r.lower() == mil_raw.lower()), None)
+            if not matched:
+                await interaction.response.send_message(
+                    f"**{mil_raw}** is not a valid military role. Valid: {', '.join(config.MILITARY_ROLES)}",
+                    ephemeral=True,
+                )
+                return
+            military_role = matched
+
+        # Resolve primary country across the full game type map
+        primary_c = find_country(self.match["game_type"], primary_raw)
+        if not primary_c:
+            await interaction.response.send_message(
+                f"**{primary_raw}** is not a valid country for {self.match['game_type']}.",
+                ephemeral=True,
+            )
+            return
+
+        # Resolve secondary country (optional)
+        secondary_c: Optional[dict] = None
+        if secondary_raw:
+            secondary_c = find_country(self.match["game_type"], secondary_raw)
+            if not secondary_c:
+                await interaction.response.send_message(
+                    f"**{secondary_raw}** is not a valid country for {self.match['game_type']}.",
+                    ephemeral=True,
+                )
+                return
+            if secondary_c["name"].lower() == primary_c["name"].lower():
+                await interaction.response.send_message(
+                    "Primary and Secondary country cannot be the same.", ephemeral=True
+                )
+                return
+
+        await db.update_registration_fields(
+            self.reg["id"],
+            squad_role=squad_role,
+            military_role=military_role,
+            primary_country=primary_c["name"],
+            secondary_country=secondary_c["name"] if secondary_c else None,
+        )
+
+        member = interaction.guild.get_member(self.reg["user_id"])
+        name   = member.display_name if member else f"<@{self.reg['user_id']}>"
+        sec_str = f" + {secondary_c['name']}" if secondary_c else ""
+        await interaction.response.send_message(
+            f"✅  **{name}** updated — {squad_role} · {military_role or '—'} · "
+            f"{primary_c['name']}{sec_str}",
+            ephemeral=True,
+        )
 
 
 # ── View Registrations button ─────────────────────────────────────────────────

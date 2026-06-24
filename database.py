@@ -228,6 +228,23 @@ async def update_registration_status(reg_id: int, status: str) -> None:
         await db.commit()
 
 
+async def update_registration_fields(
+    reg_id: int,
+    squad_role: str,
+    military_role: str,
+    primary_country: str,
+    secondary_country: Optional[str],
+) -> None:
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE registrations "
+            "SET squad_role=?, military_role=?, primary_country=?, secondary_country=? "
+            "WHERE id=?",
+            (squad_role, military_role, primary_country, secondary_country, reg_id),
+        )
+        await db.commit()
+
+
 async def withdraw_registration(reg_id: int) -> None:
     async with aiosqlite.connect(DB_PATH) as db:
         await db.execute(
