@@ -664,14 +664,10 @@ class _RoleSelectionView(discord.ui.View):
                 or sq_counts.get(r, 0) < config.SQUAD_ROLE_LIMITS[r]
             )
         ]
-        # Leaders are never blocked by taken military roles — they always see
-        # all roles and bypass the slot check (their slot is always reserved).
-        if is_leader:
-            self._available_mil = list(config.MILITARY_ROLES)
-            self._taken_mil = set(taken_mil)
-        else:
-            self._available_mil = [r for r in config.MILITARY_ROLES if r not in taken_mil]
-            self._taken_mil = set()
+        # Taken roles are hidden from the dropdown for everyone.
+        # The leader still bypasses the server-side taken check on submit
+        # (race-condition protection), but only sees actually-available roles here.
+        self._available_mil = [r for r in config.MILITARY_ROLES if r not in taken_mil]
         self._rebuild()
 
     def build_embed(self) -> discord.Embed:
@@ -718,10 +714,7 @@ class _RoleSelectionView(discord.ui.View):
                 mil_select = discord.ui.Select(
                     placeholder="Military Role...",
                     options=[
-                        discord.SelectOption(
-                            label=r, value=r, default=(r == self.military_role),
-                            description="(taken by another player)" if r in self._taken_mil else "",
-                        )
+                        discord.SelectOption(label=r, value=r, default=(r == self.military_role))
                         for r in self._available_mil
                     ],
                     custom_id="military_role_select",
