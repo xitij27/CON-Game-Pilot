@@ -2,7 +2,7 @@ import discord
 
 import config
 import database as db
-from views.register_view import RegisterMatchView, RegistrationCardView
+from views.register_view import MatchChannelView, RegistrationCardView
 from views.hub_view import MatchHubControlView, MatchCardView
 
 
@@ -58,7 +58,8 @@ class CommandPost(discord.Bot):
         # "game has ended" message instead of Discord's "interaction failed".
         all_matches = await db.get_non_cancelled_matches()
         for match in all_matches:
-            self.add_view(RegisterMatchView(match["channel_id"]))
+            if match["status"] not in ("started", "won", "lost"):
+                self.add_view(MatchChannelView(match["channel_id"], match["status"]))
             if match["status"] not in ("won", "lost"):
                 self.add_view(MatchCardView(match["channel_id"]))
 

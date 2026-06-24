@@ -158,17 +158,10 @@ class _LockConfirmView(discord.ui.View):
                     overwrites[m] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
                     selected_members.append(m)
 
-        # Remove the Register button BEFORE changing permissions. If we edit
-        # permissions first, rejected players lose channel access while the button
-        # is still visible — Discord then rejects their click before the bot can
-        # respond with a proper "roster is locked" message, causing "interaction failed".
-        roster_msg_id = panel.match.get("roster_message_id")
-        if roster_msg_id:
-            try:
-                roster_msg = await channel.fetch_message(roster_msg_id)
-                await roster_msg.edit(view=None)
-            except (discord.NotFound, discord.Forbidden):
-                pass
+        # Swap pinned message to locked view BEFORE changing permissions so
+        # rejected players see the correct buttons while they still have access.
+        from views.register_view import update_channel_panel
+        await update_channel_panel(panel.match, channel, interaction.client, "locked")
 
         mentions = " ".join(m.mention for m in selected_members)
         await channel.send(

@@ -56,14 +56,53 @@ async def _update_roster_embed(match: dict, channel: discord.TextChannel) -> Non
     await msg.edit(embed=embed)
 
 
-# ── Persistent outer view (lives on the pinned roster message) ────────────────
+# ── Persistent channel panel (pinned roster message view, status-aware) ──────
 
-class RegisterMatchView(discord.ui.View):
-    """Added to the bot and re-added on every restart for each open match."""
+class MatchChannelView(discord.ui.View):
+    """
+    Pinned message view for a match channel.
+    Buttons shown depend on match status:
+      open   → Register + Lock Roster
+      locked → Unlock Roster + Start Game
+      other  → no buttons
+    """
 
-    def __init__(self, channel_id: int):
+    def __init__(self, channel_id: int, status: str = "open"):
         super().__init__(timeout=None)
-        self.add_item(_RegisterButton(channel_id))
+        if status == "open":
+            self.add_item(_RegisterButton(channel_id))
+            self.add_item(_LockRosterButton(channel_id))
+        elif status == "locked":
+            self.add_item(_UnlockRosterButton(channel_id))
+            self.add_item(_StartGameChannelButton(channel_id))
+
+
+# Backward-compat alias used by hub_view imports
+RegisterMatchView = MatchChannelView
+
+
+async def update_channel_panel(
+    match: dict,
+    channel: discord.TextChannel,
+    bot,
+    status: str | None = None,
+) -> None:
+    """Swap the view on the pinned roster message to reflect current status."""
+    roster_msg_id = match.get("roster_message_id")
+    if not roster_msg_id:
+        return
+    try:
+        msg = await channel.fetch_message(roster_msg_id)
+    except (discord.NotFound, discord.Forbidden):
+        return
+
+    current_status = status or match["status"]
+    if current_status in ("started", "won", "lost", "cancelled"):
+        await msg.edit(view=None)
+    else:
+        view = MatchChannelView(match["channel_id"], current_status)
+        bot.add_view(view)
+        await msg.edit(view=view)
 
 
 class _RegisterButton(discord.ui.Button):
@@ -109,6 +148,153 @@ class _RegisterButton(discord.ui.Button):
                 await interaction.response.send_message(
                     "Something went wrong. Please try again.", ephemeral=True
                 )
+
+
+# ── Lock Roster button ───────────────────────────────────────────────────────
+
+class _LockRosterButton(discord.ui.Button):
+    def __init__(self, channel_id: int):
+        self._channel_id = channel_id
+        super().__init__(
+            label="Lock Roster",
+            style=discord.ButtonStyle.danger,
+            emoji="🔒",
+            custom_id=f"lock_roster_ch_{channel_id}",
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        try:
+            match = await db.get_match_by_channel(self._channel_id)
+            if not match:
+                await interaction.response.send_message("Match not found.", ephemeral=True)
+                return
+            is_leader = interaction.user.id == match["leader_id"]
+            is_admin  = any(r.name in config.ADMIN_ROLES for r in interaction.user.roles)
+            if not is_leader and not is_admin:
+                await interaction.response.send_message(
+                    "Only the Match Leader or an Admin can lock the roster.", ephemeral=True
+                )
+                return
+            if match["status"] != "open":
+                await interaction.response.send_message(
+                    "The roster is already locked.", ephemeral=True
+                )
+                return
+            regs    = await db.get_registrations(match["id"])
+            members = {r["user_id"]: interaction.guild.get_member(r["user_id"]) for r in regs}
+            from views.roster_view import RosterPanel  # lazy — avoids circular import
+            panel = RosterPanel(match, regs, members)
+            await interaction.response.send_message(embed=panel.build_embed(), view=panel, ephemeral=True)
+        except Exception:
+            if not interaction.response.is_done():
+                await interaction.response.send_message(
+                    "Something went wrong. Please try again.", ephemeral=True
+                )
+
+
+# ── Unlock Roster button ──────────────────────────────────────────────────────
+
+class _UnlockRosterButton(discord.ui.Button):
+    def __init__(self, channel_id: int):
+        self._channel_id = channel_id
+        super().__init__(
+            label="Unlock Roster",
+            style=discord.ButtonStyle.secondary,
+            emoji="🔓",
+            custom_id=f"unlock_roster_ch_{channel_id}",
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        try:
+            match = await db.get_match_by_channel(self._channel_id)
+            if not match:
+                await interaction.response.send_message("Match not found.", ephemeral=True)
+                return
+            if interaction.user.id != match["leader_id"]:
+                await interaction.response.send_message(
+                    "Only the Match Leader can unlock the roster.", ephemeral=True
+                )
+                return
+            if match["status"] != "locked":
+                await interaction.response.send_message(
+                    "The roster isn't locked.", ephemeral=True
+                )
+                return
+            cog = interaction.client.cogs.get("MatchCog")
+            if cog:
+                await cog.do_unlock_roster(interaction, match)
+            else:
+                await interaction.response.send_message("Bot error — try again.", ephemeral=True)
+        except Exception:
+            if not interaction.response.is_done():
+                await interaction.response.send_message(
+                    "Something went wrong. Please try again.", ephemeral=True
+                )
+
+
+# ── Start Game button + modal ─────────────────────────────────────────────────
+
+class _StartGameChannelButton(discord.ui.Button):
+    def __init__(self, channel_id: int):
+        self._channel_id = channel_id
+        super().__init__(
+            label="Start Game",
+            style=discord.ButtonStyle.success,
+            emoji="🎮",
+            custom_id=f"startgame_ch_{channel_id}",
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        try:
+            match = await db.get_match_by_channel(self._channel_id)
+            if not match:
+                await interaction.response.send_message("Match not found.", ephemeral=True)
+                return
+            is_leader = interaction.user.id == match["leader_id"]
+            is_admin  = any(r.name in config.ADMIN_ROLES for r in interaction.user.roles)
+            if not is_leader and not is_admin:
+                await interaction.response.send_message(
+                    "Only the Match Leader or an Admin can start the game.", ephemeral=True
+                )
+                return
+            if match["status"] != "locked":
+                await interaction.response.send_message(
+                    "The roster must be locked before starting the game.", ephemeral=True
+                )
+                return
+            await interaction.response.send_modal(_StartGameChannelModal(match))
+        except Exception:
+            if not interaction.response.is_done():
+                await interaction.response.send_message(
+                    "Something went wrong. Please try again.", ephemeral=True
+                )
+
+
+class _StartGameChannelModal(discord.ui.Modal):
+    def __init__(self, match: dict):
+        super().__init__(title="Enter Game Lobby Code")
+        self.match = match
+        self.code_input = discord.ui.InputText(
+            label="Game Code (8 digits)",
+            placeholder="12345678",
+            min_length=8,
+            max_length=8,
+            style=discord.InputTextStyle.short,
+        )
+        self.add_item(self.code_input)
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        code = self.code_input.value.strip()
+        if not (code.isdigit() and len(code) == 8):
+            await interaction.response.send_message(
+                "Game code must be exactly **8 digits**.", ephemeral=True
+            )
+            return
+        cog = interaction.client.cogs.get("MatchCog")
+        if cog:
+            await cog.do_start_game(interaction, self.match, code)
+        else:
+            await interaction.response.send_message("Bot error — try again.", ephemeral=True)
 
 
 # ── Step 1: role selects ──────────────────────────────────────────────────────

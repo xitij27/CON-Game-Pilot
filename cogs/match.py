@@ -8,7 +8,7 @@ import config
 import database as db
 from data.game_data import get_countries
 from views.setup_views import SetupWizard
-from views.register_view import RegisterMatchView, _update_roster_embed
+from views.register_view import MatchChannelView, RegisterMatchView, _update_roster_embed, update_channel_panel
 from views.roster_view import RosterPanel
 from hub_utils import refresh_hub_card, build_match_card_embed
 
@@ -122,7 +122,7 @@ class MatchCog(commands.Cog):
 
         countries = get_countries(wizard.game_type, wizard.region)
         roster_embed = self._build_roster_embed(wizard, interaction.user, countries)
-        view = RegisterMatchView(channel.id)
+        view = MatchChannelView(channel.id, "open")
         msg = await channel.send(embed=roster_embed, view=view)
         await msg.pin()
         self.bot.add_view(view)
@@ -242,6 +242,8 @@ class MatchCog(commands.Cog):
         match_refreshed = await db.get_match_by_channel(match["channel_id"])
         if match_refreshed:
             await refresh_hub_card(interaction.client, match_refreshed)
+            if channel:
+                await update_channel_panel(match_refreshed, channel, interaction.client, "started")
 
         if not interaction.response.is_done():
             await interaction.response.send_message("Game started!", ephemeral=True)
@@ -300,15 +302,7 @@ class MatchCog(commands.Cog):
         await db.reopen_match_registrations(match["id"])
 
         if channel:
-            roster_msg_id = match.get("roster_message_id")
-            if roster_msg_id:
-                try:
-                    roster_msg = await channel.fetch_message(roster_msg_id)
-                    view = RegisterMatchView(channel.id)
-                    await roster_msg.edit(view=view)
-                    self.bot.add_view(view)
-                except (discord.NotFound, discord.Forbidden):
-                    pass
+            await update_channel_panel(match, channel, self.bot, "open")
 
             overwrites = {
                 guild.default_role: discord.PermissionOverwrite(
