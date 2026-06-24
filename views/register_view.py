@@ -393,11 +393,9 @@ class _EditScheduleButton(discord.ui.Button):
             if not match:
                 await interaction.response.send_message("Match not found.", ephemeral=True)
                 return
-            is_leader = interaction.user.id == match["leader_id"]
-            is_admin  = any(r.name in config.ADMIN_ROLES for r in interaction.user.roles)
-            if not is_leader and not is_admin:
+            if interaction.user.id != match["leader_id"]:
                 await interaction.response.send_message(
-                    "Only the Match Leader or an Admin can edit the schedule.", ephemeral=True
+                    "Only the Match Leader can edit the schedule.", ephemeral=True
                 )
                 return
             if match["status"] in ("started", "won", "lost", "cancelled"):
