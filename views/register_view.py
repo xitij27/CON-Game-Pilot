@@ -71,9 +71,11 @@ class MatchChannelView(discord.ui.View):
         if status == "open":
             self.add_item(_RegisterButton(channel_id))
             self.add_item(_LockRosterButton(channel_id))
+            self.add_item(_CancelMatchButton(channel_id))
         elif status == "locked":
             self.add_item(_UnlockRosterButton(channel_id))
             self.add_item(_StartGameChannelButton(channel_id))
+            self.add_item(_CancelMatchButton(channel_id))
 
 
 # Backward-compat alias used by hub_view imports
@@ -294,6 +296,77 @@ class _StartGameChannelModal(discord.ui.Modal):
             await cog.do_start_game(interaction, self.match, code)
         else:
             await interaction.response.send_message("Bot error — try again.", ephemeral=True)
+
+
+# ── Cancel Match button (leader only) ────────────────────────────────────────
+
+class _CancelMatchButton(discord.ui.Button):
+    def __init__(self, channel_id: int):
+        self._channel_id = channel_id
+        super().__init__(
+            label="Cancel Match",
+            style=discord.ButtonStyle.danger,
+            emoji="❌",
+            custom_id=f"cancel_match_ch_{channel_id}",
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        try:
+            match = await db.get_match_by_channel(self._channel_id)
+            if not match:
+                await interaction.response.send_message("Match not found.", ephemeral=True)
+                return
+            if interaction.user.id != match["leader_id"]:
+                await interaction.response.send_message(
+                    "Only the Match Leader can cancel this match.", ephemeral=True
+                )
+                return
+            if match["status"] in ("started", "won", "lost"):
+                await interaction.response.send_message(
+                    "The game is already in progress — use `/endgame` to declare the outcome.",
+                    ephemeral=True,
+                )
+                return
+            await interaction.response.send_message(
+                embed=discord.Embed(
+                    title="⚠️  Cancel this match?",
+                    description="The channel and scheduled event will be **permanently deleted**.",
+                    color=discord.Color.red(),
+                ),
+                view=_CancelMatchConfirmView(match),
+                ephemeral=True,
+            )
+        except Exception:
+            if not interaction.response.is_done():
+                await interaction.response.send_message(
+                    "Something went wrong. Please try again.", ephemeral=True
+                )
+
+
+class _CancelMatchConfirmView(discord.ui.View):
+    def __init__(self, match: dict):
+        super().__init__(timeout=60)
+        self.match = match
+
+    @discord.ui.button(label="Yes, Cancel Match", style=discord.ButtonStyle.danger)
+    async def confirm(self, button: discord.ui.Button, interaction: discord.Interaction) -> None:
+        await interaction.response.edit_message(
+            embed=discord.Embed(
+                title="Match cancelled.",
+                description="The channel will be deleted in 5 seconds.",
+                color=discord.Color.dark_grey(),
+            ),
+            view=None,
+        )
+        self.stop()
+        cog = interaction.client.cogs.get("MatchCog")
+        if cog:
+            await cog.do_cancel_match(self.match, interaction.guild)
+
+    @discord.ui.button(label="Keep Match", style=discord.ButtonStyle.secondary)
+    async def keep(self, button: discord.ui.Button, interaction: discord.Interaction) -> None:
+        await interaction.response.edit_message(content="Cancellation aborted.", view=None)
+        self.stop()
 
 
 # ── Step 1: role selects ──────────────────────────────────────────────────────
