@@ -61,8 +61,8 @@ class MatchChannelView(discord.ui.View):
     """
     Pinned message view for a match channel.
     Buttons shown depend on match status:
-      open   → Register + Lock Roster
-      locked → Unlock Roster + Start Game
+      open   → Register + Lock Roster + View Registrations + Cancel Match
+      locked → Unlock Roster + Start Game + View Registrations + Cancel Match
       other  → no buttons
     """
 
@@ -71,10 +71,12 @@ class MatchChannelView(discord.ui.View):
         if status == "open":
             self.add_item(_RegisterButton(channel_id))
             self.add_item(_LockRosterButton(channel_id))
+            self.add_item(_ViewRegistrationsButton(channel_id))
             self.add_item(_CancelMatchButton(channel_id))
         elif status == "locked":
             self.add_item(_UnlockRosterButton(channel_id))
             self.add_item(_StartGameChannelButton(channel_id))
+            self.add_item(_ViewRegistrationsButton(channel_id))
             self.add_item(_CancelMatchButton(channel_id))
 
 
@@ -367,6 +369,56 @@ class _CancelMatchConfirmView(discord.ui.View):
     async def keep(self, button: discord.ui.Button, interaction: discord.Interaction) -> None:
         await interaction.response.edit_message(content="Cancellation aborted.", view=None)
         self.stop()
+
+
+# ── View Registrations button ─────────────────────────────────────────────────
+
+class _ViewRegistrationsButton(discord.ui.Button):
+    def __init__(self, channel_id: int):
+        self._channel_id = channel_id
+        super().__init__(
+            label="Registrations",
+            style=discord.ButtonStyle.secondary,
+            emoji="👥",
+            custom_id=f"view_regs_{channel_id}",
+        )
+
+    async def callback(self, interaction: discord.Interaction) -> None:
+        try:
+            match = await db.get_match_by_channel(self._channel_id)
+            if not match:
+                await interaction.response.send_message("Match not found.", ephemeral=True)
+                return
+
+            regs = await db.get_registrations(match["id"])
+            if not regs:
+                await interaction.response.send_message(
+                    "No one has registered yet.", ephemeral=True
+                )
+                return
+
+            lines = []
+            for reg in regs:
+                member = interaction.guild.get_member(reg["user_id"])
+                name = member.display_name if member else f"<@{reg['user_id']}>"
+                sec = f" + **{reg['secondary_country']}**" if reg["secondary_country"] else ""
+                lines.append(
+                    f"**{name}** — {reg['military_role'] or '—'} · {reg['squad_role']}\n"
+                    f"　🎯 **{reg['primary_country']}**{sec}"
+                )
+
+            embed = discord.Embed(
+                title=f"👥  Registrations  ·  {match['game_type']} / {match['region']}",
+                description="\n\n".join(lines),
+                color=discord.Color.blurple(),
+            )
+            embed.set_footer(text=f"{len(regs)} player(s) registered")
+            await interaction.response.send_message(embed=embed, ephemeral=True)
+        except Exception:
+            if not interaction.response.is_done():
+                await interaction.response.send_message(
+                    "Something went wrong. Please try again.", ephemeral=True
+                )
 
 
 # ── Step 1: role selects ──────────────────────────────────────────────────────
