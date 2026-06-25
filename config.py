@@ -33,8 +33,8 @@ ADMIN_ROLES: list[str] = [
 ]
 
 PREGAME_CATEGORY: str = "PREGAME"
-VICTORY_CATEGORY: str = "VICTORY WALL"
-LOSS_CATEGORY:    str = "LOSS LOG"
+VICTORY_CATEGORY: str = "VICTORY WALL PILOT"
+LOSS_CATEGORY:    str = "LOSS LOG PILOT"
 
 # Discord category names for each scale tier
 SCALE_CATEGORIES: dict[str, str] = {
