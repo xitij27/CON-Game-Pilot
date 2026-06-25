@@ -279,7 +279,7 @@ class FieldReportWizard(discord.ui.View):
         if self._on_complete:
             await self._on_complete(interaction)
 
-    def _refresh(self) -> None:
+    def _update_buttons(self) -> None:
         scored = set(self.player_data)
         all_scored = bool(self.regs) and all(r["user_id"] in scored for r in self.regs)
         for item in self.children:
@@ -297,7 +297,7 @@ class FieldReportWizard(discord.ui.View):
                 item.disabled = not (all_scored and bool(self.overall_comments))
 
     def build_embed(self) -> discord.Embed:
-        self._refresh()
+        self._update_buttons()
         scored = set(self.player_data)
         done = len(scored)
         total = len(self.regs)

@@ -334,11 +334,12 @@ class _StartGameChannelModal(discord.ui.Modal):
                 "Game code must be exactly **8 digits**.", ephemeral=True
             )
             return
+        await interaction.response.defer(ephemeral=True)
         cog = interaction.client.cogs.get("MatchCog")
         if cog:
             await cog.do_start_game(interaction, self.match, code)
         else:
-            await interaction.response.send_message("Bot error — try again.", ephemeral=True)
+            await interaction.followup.send("Bot error — try again.", ephemeral=True)
 
 
 # ── End Game button (started state, leader/admin) ────────────────────────────
@@ -1172,6 +1173,28 @@ class _CountrySelectView(discord.ui.View):
         submit.callback = self._on_submit
         self.add_item(submit)
 
+    def _add_primary_select(self) -> None:
+        for item in list(self.children):
+            if getattr(item, "custom_id", None) == "primary_country_select":
+                self.remove_item(item)
+                break
+        sel = discord.ui.Select(
+            placeholder="Primary Country...",
+            options=[
+                discord.SelectOption(
+                    label=c["name"],
+                    value=c["name"],
+                    description=f"{c['doctrine']} · {c['cities']} cities",
+                    default=(c["name"] == self.primary_country),
+                )
+                for c in self._all_available[:25]
+            ],
+            custom_id="primary_country_select",
+            row=0,
+        )
+        sel.callback = self._on_primary
+        self.add_item(sel)
+
     def _add_secondary_select(self, exclude: Optional[str]) -> None:
         """Build (or rebuild) the secondary dropdown, excluding the player's chosen primary."""
         for item in list(self.children):
@@ -1200,9 +1223,9 @@ class _CountrySelectView(discord.ui.View):
 
     async def _on_primary(self, interaction: discord.Interaction) -> None:
         self.primary_country = interaction.data["values"][0]
-        # If the player had the same country selected as secondary, clear it.
         if self.secondary_country == self.primary_country:
             self.secondary_country = None
+        self._add_primary_select()
         self._add_secondary_select(exclude=self.primary_country)
         await interaction.response.edit_message(view=self)
 
