@@ -1,7 +1,9 @@
+import os
+
 import aiosqlite
 from typing import Optional
 
-DB_PATH = "con-game-pilot.db"
+DB_PATH: str = os.getenv("DATABASE_PATH", "con-game-pilot.db")
 
 
 async def init_db() -> None:

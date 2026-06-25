@@ -1,4 +1,5 @@
 import asyncio
+from pathlib import Path
 
 import discord
 import uvicorn
@@ -6,6 +7,7 @@ import uvicorn
 import config
 import database as db
 import health
+import turso_sync
 from views.register_view import MatchChannelView, RegistrationCardView
 from views.hub_view import MatchHubControlView
 
@@ -87,11 +89,21 @@ async def _run() -> None:
     if not config.GUILD_ID:
         raise SystemExit("SERVER_ID is not set. Add your server's ID to .env.")
 
+    # Cold-start restore: if the local DB was wiped (e.g. Render redeploy),
+    # pull the last backup down from Turso before anything else runs.
+    if not Path(db.DB_PATH).exists():
+        print("[con-game-pilot] No local DB — attempting Turso restore...", flush=True)
+        await db.init_db()
+        await turso_sync.restore_from_turso(db.DB_PATH)
+
     intents = discord.Intents.default()
     intents.members = True
 
     bot = CONGamePilot(intents=intents, debug_guilds=[config.GUILD_ID])
     server = uvicorn.Server(health.make_config())
+
+    if turso_sync.is_enabled():
+        asyncio.create_task(turso_sync.run_periodic_backup(db.DB_PATH))
 
     await asyncio.gather(
         bot.start(config.DISCORD_TOKEN),
