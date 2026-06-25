@@ -1,7 +1,11 @@
+import asyncio
+
 import discord
+import uvicorn
 
 import config
 import database as db
+import health
 from views.register_view import MatchChannelView, RegistrationCardView
 from views.hub_view import MatchHubControlView
 
@@ -77,7 +81,7 @@ class CONGamePilot(discord.Bot):
         )
 
 
-def main() -> None:
+async def _run() -> None:
     if not config.DISCORD_TOKEN:
         raise SystemExit("DISCORD_BOT_TOKEN is not set. Copy .env.example → .env and fill it in.")
     if not config.GUILD_ID:
@@ -87,7 +91,16 @@ def main() -> None:
     intents.members = True
 
     bot = CONGamePilot(intents=intents, debug_guilds=[config.GUILD_ID])
-    bot.run(config.DISCORD_TOKEN)
+    server = uvicorn.Server(health.make_config())
+
+    await asyncio.gather(
+        bot.start(config.DISCORD_TOKEN),
+        server.serve(),
+    )
+
+
+def main() -> None:
+    asyncio.run(_run())
 
 
 if __name__ == "__main__":

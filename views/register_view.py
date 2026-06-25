@@ -108,6 +108,7 @@ class MatchChannelView(discord.ui.View):
         elif status == "started":
             self.add_item(_EndGameButton(channel_id, "Won"))
             self.add_item(_EndGameButton(channel_id, "Lost"))
+            self.add_item(_EditPlayersButton(channel_id))
 
 
 # Backward-compat alias used by hub_view imports
@@ -724,9 +725,9 @@ class _EditPlayersButton(discord.ui.Button):
                     "Only the Match Leader or an Admin can edit player registrations.", ephemeral=True
                 )
                 return
-            if match["status"] != "locked":
+            if match["status"] not in ("locked", "started"):
                 await interaction.response.send_message(
-                    "Player registrations can only be edited while the roster is locked.", ephemeral=True
+                    "Player registrations can only be edited while the roster is locked or the game is in progress.", ephemeral=True
                 )
                 return
 

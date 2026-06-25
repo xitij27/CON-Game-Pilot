@@ -92,6 +92,7 @@ class MatchCog(commands.Cog):
 
     async def creategame_from_interaction(self, interaction: discord.Interaction) -> None:
         """Entry point for the hub Create Match button (replaces /creategame in the hub flow)."""
+        await interaction.response.defer(ephemeral=True)
         wizard = SetupWizard(interaction.user, self._wizard_confirmed)
         embed = discord.Embed(
             title="🗺️ New Match Setup",
@@ -99,7 +100,7 @@ class MatchCog(commands.Cog):
             color=discord.Color.blue(),
         )
         embed.set_footer(text="Game Type → Region → Timezone → Time → Confirm")
-        await interaction.response.send_message(embed=embed, view=wizard, ephemeral=True)
+        await interaction.followup.send(embed=embed, view=wizard, ephemeral=True)
 
     async def _wizard_confirmed(
         self, interaction: discord.Interaction, wizard: SetupWizard
