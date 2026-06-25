@@ -881,6 +881,15 @@ class _EditPlayerModal(discord.ui.Modal):
 
         member = interaction.guild.get_member(self.reg["user_id"])
         name   = member.display_name if member else f"<@{self.reg['user_id']}>"
+
+        # Refresh the registration card embed so it matches the updated data.
+        if member and self.reg.get("message_id"):
+            try:
+                card_msg = await interaction.channel.fetch_message(self.reg["message_id"])
+                await card_msg.edit(embed=_build_card(member, primary_c, secondary_c, military_role or None, squad_role))
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                pass
+
         sec_str = f" + {secondary_c['name']}" if secondary_c else ""
         await interaction.response.send_message(
             f"✅  **{name}** updated — {squad_role} · {military_role or '—'} · "
@@ -1133,53 +1142,69 @@ class _CountrySelectView(discord.ui.View):
         self.is_leader = is_leader
         self.primary_country: Optional[str] = None
         self.secondary_country: Optional[str] = None
-
-        primary_options = [
-            discord.SelectOption(
-                label=c["name"],
-                value=c["name"],
-                description=f"{c['doctrine']} · {c['cities']} cities",
-            )
-            for c in primary_available[:25]
-        ]
-        secondary_options = [
-            discord.SelectOption(
-                label=c["name"],
-                value=c["name"],
-                description=f"{c['doctrine']} · {c['cities']} cities",
-            )
-            for c in primary_available[:24]
-        ]
+        self._all_available = primary_available  # kept for secondary rebuild after primary picked
 
         primary_sel = discord.ui.Select(
             placeholder="Primary Country...",
-            options=primary_options,
+            options=[
+                discord.SelectOption(
+                    label=c["name"],
+                    value=c["name"],
+                    description=f"{c['doctrine']} · {c['cities']} cities",
+                )
+                for c in primary_available[:25]
+            ],
             custom_id="primary_country_select",
+            row=0,
         )
         primary_sel.callback = self._on_primary
         self.add_item(primary_sel)
 
-        # Secondary: None option + available countries (Discord limit is 25 total)
-        secondary_sel = discord.ui.Select(
-            placeholder="Secondary Country (optional)...",
-            options=[discord.SelectOption(label="— None —", value="__none__")] + secondary_options,
-            custom_id="secondary_country_select",
-        )
-        secondary_sel.callback = self._on_secondary
-        self.add_item(secondary_sel)
+        self._add_secondary_select(exclude=None)
 
         submit = discord.ui.Button(
             label="Register",
             style=discord.ButtonStyle.success,
             emoji="✅",
             custom_id="country_submit",
+            row=2,
         )
         submit.callback = self._on_submit
         self.add_item(submit)
 
+    def _add_secondary_select(self, exclude: Optional[str]) -> None:
+        """Build (or rebuild) the secondary dropdown, excluding the player's chosen primary."""
+        for item in list(self.children):
+            if getattr(item, "custom_id", None) == "secondary_country_select":
+                self.remove_item(item)
+                break
+
+        options = [
+            discord.SelectOption(
+                label=c["name"],
+                value=c["name"],
+                description=f"{c['doctrine']} · {c['cities']} cities",
+            )
+            for c in self._all_available
+            if c["name"] != exclude
+        ][:24]  # cap at 24 — "— None —" takes the 25th slot
+
+        sel = discord.ui.Select(
+            placeholder="Secondary Country (optional)...",
+            options=[discord.SelectOption(label="— None —", value="__none__")] + options,
+            custom_id="secondary_country_select",
+            row=1,
+        )
+        sel.callback = self._on_secondary
+        self.add_item(sel)
+
     async def _on_primary(self, interaction: discord.Interaction) -> None:
         self.primary_country = interaction.data["values"][0]
-        await interaction.response.defer()
+        # If the player had the same country selected as secondary, clear it.
+        if self.secondary_country == self.primary_country:
+            self.secondary_country = None
+        self._add_secondary_select(exclude=self.primary_country)
+        await interaction.response.edit_message(view=self)
 
     async def _on_secondary(self, interaction: discord.Interaction) -> None:
         val = interaction.data["values"][0]
