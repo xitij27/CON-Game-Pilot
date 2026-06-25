@@ -21,14 +21,12 @@ _ROMAN: dict[str, int] = {
 _INT_TO_ROMAN: dict[int, str] = {v: k for k, v in _ROMAN.items()}
 
 
-def _find_latest_category(guild: discord.Guild, base_name: str) -> discord.CategoryChannel | None:
-    """Return the highest-numbered category whose name starts with base_name.
-
-    Handles suffixes like '', ' II', ' III', ' IV' (Roman numerals up to X).
-    Falls back to Discord position order if the suffix isn't a recognised numeral.
-    """
+def _find_latest_category(
+    categories: list[discord.CategoryChannel], base_name: str
+) -> discord.CategoryChannel | None:
+    """Return the highest-numbered category whose name starts with base_name."""
     base_lower = base_name.lower()
-    matches = [c for c in guild.categories if c.name.lower().startswith(base_lower)]
+    matches = [c for c in categories if c.name.lower().startswith(base_lower)]
     if not matches:
         return None
 
@@ -45,13 +43,25 @@ async def _get_archive_category(
     guild: discord.Guild, base_name: str
 ) -> discord.CategoryChannel:
     """Return an archive category with room (<50 channels), creating the next Roman-numeral one if the latest is full."""
-    latest = _find_latest_category(guild, base_name)
+    # Fetch live from the API — guild.categories is a stale in-memory cache and
+    # misses categories created since the last bot restart.
+    all_channels = await guild.fetch_channels()
+    categories = [c for c in all_channels if isinstance(c, discord.CategoryChannel)]
+
+    latest = _find_latest_category(categories, base_name)
     if not latest:
         return await guild.create_category(base_name)
     if len(latest.channels) < 50:
         return latest
+
     suffix = latest.name[len(base_name):].strip()
-    current_num = _ROMAN.get(suffix.upper(), 1) if suffix else 1
+    base_lower = base_name.lower()
+    # Prefer the parsed Roman numeral; fall back to the count of existing matching
+    # categories so an unrecognised suffix never resets the sequence to II.
+    current_num = (
+        _ROMAN.get(suffix.upper())
+        or sum(1 for c in categories if c.name.lower().startswith(base_lower))
+    ) if suffix else 1
     next_suffix = _INT_TO_ROMAN.get(current_num + 1, str(current_num + 1))
     return await guild.create_category(f"{base_name} {next_suffix}")
 
